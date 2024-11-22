@@ -690,9 +690,9 @@ public final class EmbeddedEngine implements DebeziumEngine<SourceRecord>, Embed
         while (runningThread.get() != null) {
             List<SourceRecord> changeRecords = null;
             try {
-                LOGGER.debug("Embedded engine is polling task for records on thread {}", runningThread.get());
+                LOGGER.info("Embedded engine is polling task for records on thread {}", runningThread.get());
                 changeRecords = task.poll(); // blocks until there are values ...
-                LOGGER.debug("Embedded engine returned from polling task for records");
+                LOGGER.info("Embedded engine returned from polling task for records");
             }
             catch (InterruptedException e) {
                 // Interrupted while polling ...
