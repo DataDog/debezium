@@ -255,7 +255,7 @@ public class ChangeEventQueue<T extends Sizeable> implements ChangeEventQueueMet
         LoggingContext.PreviousContext previousContext = loggingContextSupplier.get();
 
         try {
-            LOGGER.debug("polling records...");
+            LOGGER.info("polling records...");
             final Timer timeout = Threads.timer(Clock.SYSTEM, Temporals.min(pollInterval, ConfigurationDefaults.RETURN_CONTROL_INTERVAL));
             try {
                 this.lock.lock();
