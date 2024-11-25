@@ -286,7 +286,10 @@ public abstract class BaseSourceTask<P extends Partition, O extends OffsetContex
                 return Collections.emptyList();
             }
 
+            final Instant beforeTime = clock.currentTime();
             final List<SourceRecord> records = doPoll();
+            final Instant afterTime = clock.currentTime();
+            LOGGER.info("polling time {}", Strings.duration(Duration.between(beforeTime, afterTime).toMillis()));
             logStatistics(records);
 
             resetErrorHandlerRetriesIfNeeded();
@@ -320,9 +323,9 @@ public abstract class BaseSourceTask<P extends Partition, O extends OffsetContex
             if (pollOutputDelay.hasElapsed()) {
                 // We want to record the status ...
                 final Instant currentTime = clock.currentTime();
-                LOGGER.info("{} records sent during previous {}, last recorded offset of {} partition is {}", previousOutputBatchSize,
+                LOGGER.info("{} records sent during previous {}, last recorded offset of {} partition is {}, records batch size {}", previousOutputBatchSize,
                         Strings.duration(Duration.between(previousOutputInstant, currentTime).toMillis()),
-                        lastRecord.sourcePartition(), lastRecord.sourceOffset());
+                        lastRecord.sourcePartition(), lastRecord.sourceOffset(), records.size());
 
                 previousOutputInstant = currentTime;
                 previousOutputBatchSize = 0;
@@ -459,7 +462,7 @@ public abstract class BaseSourceTask<P extends Partition, O extends OffsetContex
                         Map<String, ?> partition = iterator.next();
                         Map<String, ?> lastOffset = lastOffsets.get(partition);
 
-                        LOGGER.debug("Committing offset '{}' for partition '{}'", partition, lastOffset);
+                        LOGGER.info("Committing offset '{}' for partition '{}'", partition, lastOffset);
                         coordinator.commitOffset(partition, lastOffset);
                         iterator.remove();
                     }
