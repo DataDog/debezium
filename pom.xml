@@ -227,6 +227,7 @@
         <module>quarkus-debezium-parent</module>
         <module>debezium-openlineage</module>
         <module>debezium-common</module>
+        <module>debezium-schema-translator</module>
     </modules>
 
     <distributionManagement>

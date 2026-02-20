@@ -1,0 +1,65 @@
+/*
+ * Copyright Debezium Authors.
+ *
+ * Licensed under the Apache Software License version 2.0, available at http://www.apache.org/licenses/LICENSE-2.0
+ */
+package io.debezium.schematranslator;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.util.concurrent.Executors;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.sun.net.httpserver.HttpServer;
+
+import io.debezium.schematranslator.api.HealthHandler;
+import io.debezium.schematranslator.api.RegisterSchemasHandler;
+import io.debezium.schematranslator.config.TranslatorConfig;
+import io.debezium.schematranslator.schema.AvroSchemaConverter;
+import io.debezium.schematranslator.schema.DebeziumSchemaReader;
+import io.debezium.schematranslator.schema.SchemaRegistryPublisher;
+
+/**
+ * Main entry point for the Debezium Schema Translator service.
+ */
+public class App {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(App.class);
+
+    public static void main(String[] args) throws IOException {
+        TranslatorConfig config = new TranslatorConfig();
+
+        LOGGER.info("Starting Debezium Schema Translator on port {}", config.getHttpPort());
+
+        // Initialise core components
+        DebeziumSchemaReader schemaReader = new DebeziumSchemaReader(config.toDebeziumConfig());
+        AvroSchemaConverter avroConverter = new AvroSchemaConverter();
+        SchemaRegistryPublisher publisher = new SchemaRegistryPublisher(config.getSchemaRegistryUrl());
+
+        // Register shutdown hook to close JDBC connection cleanly
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            LOGGER.info("Shutting down...");
+            try {
+                schemaReader.close();
+            }
+            catch (Exception e) {
+                LOGGER.warn("Error during shutdown", e);
+            }
+        }));
+
+        // Start HTTP server
+        HttpServer server = HttpServer.create(new InetSocketAddress(config.getHttpPort()), 0);
+        server.createContext(
+                "/api/v1/schema-translator/register-schemas",
+                new RegisterSchemasHandler(schemaReader, avroConverter, publisher));
+        server.createContext(
+                "/api/v1/schema-translator/health",
+                new HealthHandler());
+        server.setExecutor(Executors.newCachedThreadPool());
+        server.start();
+
+        LOGGER.info("Debezium Schema Translator is running on port {}", config.getHttpPort());
+    }
+}
