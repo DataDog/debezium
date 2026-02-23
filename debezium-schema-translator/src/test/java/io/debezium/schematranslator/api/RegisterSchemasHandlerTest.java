@@ -1,0 +1,192 @@
+/*
+ * Copyright Debezium Authors.
+ *
+ * Licensed under the Apache Software License version 2.0, available at http://www.apache.org/licenses/LICENSE-2.0
+ */
+package io.debezium.schematranslator.api;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+import org.apache.kafka.connect.data.SchemaBuilder;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sun.net.httpserver.Headers;
+import com.sun.net.httpserver.HttpExchange;
+
+import io.debezium.data.Envelope;
+import io.debezium.relational.TableId;
+import io.debezium.relational.TableSchema;
+import io.debezium.schematranslator.model.RegisteredSchema;
+import io.debezium.schematranslator.schema.AvroSchemaConverter;
+import io.debezium.schematranslator.schema.DebeziumSchemaReader;
+import io.debezium.schematranslator.schema.SchemaRegistryPublisher;
+import io.debezium.schematranslator.schema.SchemaRegistryPublisher.SchemaIncompatibilityException;
+import io.debezium.spi.topic.TopicNamingStrategy;
+
+@ExtendWith(MockitoExtension.class)
+class RegisterSchemasHandlerTest {
+
+    @Mock
+    private DebeziumSchemaReader schemaReader;
+    @Mock
+    private AvroSchemaConverter avroConverter;
+    @Mock
+    private SchemaRegistryPublisher publisher;
+
+    private RegisterSchemasHandler handler;
+    private ByteArrayOutputStream responseBody;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @BeforeEach
+    void setUp() {
+        handler = new RegisterSchemasHandler(schemaReader, avroConverter, publisher);
+    }
+
+    @Test
+    void nonPostMethodReturns405() throws Exception {
+        HttpExchange exchange = mockExchange("GET", "");
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(405), anyLong());
+    }
+
+    @Test
+    void invalidJsonBodyReturns400() throws Exception {
+        HttpExchange exchange = mockExchange("POST", "not-json");
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(400), anyLong());
+    }
+
+    @Test
+    void missingTablesFieldReturns400() throws Exception {
+        HttpExchange exchange = mockExchange("POST", "{}");
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(400), anyLong());
+        assertThat(responseBody.toString(StandardCharsets.UTF_8)).contains("tables");
+    }
+
+    @Test
+    void emptyTablesListReturns400() throws Exception {
+        HttpExchange exchange = mockExchange("POST", "{\"tables\":[]}");
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(400), anyLong());
+    }
+
+    @Test
+    void postgresErrorReturns500() throws Exception {
+        HttpExchange exchange = mockExchange("POST", "{\"tables\":[\"public.users\"]}");
+        when(schemaReader.readSchemas(anyList())).thenThrow(new RuntimeException("Connection refused"));
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(500), anyLong());
+        assertThat(responseBody.toString(StandardCharsets.UTF_8)).contains("Connection refused");
+    }
+
+    @Test
+    void schemaIncompatibilityReturns409() throws Exception {
+        HttpExchange exchange = mockExchange("POST", "{\"tables\":[\"public.users\"]}");
+        setupSchemaReaderAndConverter();
+        doThrow(new SchemaIncompatibilityException("incompatible schema", new Exception()))
+                .when(publisher).register(any(), any(), any());
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(409), anyLong());
+        assertThat(responseBody.toString(StandardCharsets.UTF_8)).contains("incompatible schema");
+    }
+
+    @Test
+    void schemaRegistryIoErrorReturns500() throws Exception {
+        HttpExchange exchange = mockExchange("POST", "{\"tables\":[\"public.users\"]}");
+        setupSchemaReaderAndConverter();
+        doThrow(new IOException("network error"))
+                .when(publisher).register(any(), any(), any());
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(500), anyLong());
+        assertThat(responseBody.toString(StandardCharsets.UTF_8)).contains("network error");
+    }
+
+    @Test
+    void successfulRegistrationReturns200WithResults() throws Exception {
+        HttpExchange exchange = mockExchange("POST", "{\"tables\":[\"public.users\"]}");
+        setupSchemaReaderAndConverter();
+        when(publisher.register(any(), any(), any()))
+                .thenReturn(new RegisteredSchema("public.users", "test.public.users-value", 1, 1));
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(200), anyLong());
+        JsonNode response = objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
+        assertThat(response.get("registered_schemas")).hasSize(1);
+        JsonNode registered = response.get("registered_schemas").get(0);
+        assertThat(registered.get("table").asText()).isEqualTo("public.users");
+        assertThat(registered.get("subject").asText()).isEqualTo("test.public.users-value");
+        assertThat(registered.get("schema_id").asInt()).isEqualTo(1);
+    }
+
+    // --- helpers ---
+
+    @SuppressWarnings("unchecked")
+    private void setupSchemaReaderAndConverter() throws Exception {
+        TableId tableId = new TableId(null, "public", "users");
+        TableSchema tableSchema = mock(TableSchema.class);
+        Envelope envelope = mock(Envelope.class);
+        when(tableSchema.getEnvelopeSchema()).thenReturn(envelope);
+        when(envelope.schema()).thenReturn(SchemaBuilder.struct().name("Envelope").build());
+
+        Map<TableId, TableSchema> schemas = new LinkedHashMap<>();
+        schemas.put(tableId, tableSchema);
+        when(schemaReader.readSchemas(List.of("public.users"))).thenReturn(schemas);
+
+        TopicNamingStrategy<TableId> strategy = mock(TopicNamingStrategy.class);
+        when(strategy.dataChangeTopic(tableId)).thenReturn("test.public.users");
+        when(schemaReader.getTopicNamingStrategy()).thenReturn(strategy);
+
+        when(avroConverter.toAvro(any()))
+                .thenReturn(org.apache.avro.Schema.create(org.apache.avro.Schema.Type.STRING));
+    }
+
+    private HttpExchange mockExchange(String method, String body) throws IOException {
+        HttpExchange exchange = mock(HttpExchange.class);
+        when(exchange.getRequestMethod()).thenReturn(method);
+        lenient().when(exchange.getRequestBody())
+                .thenReturn(new ByteArrayInputStream(body.getBytes(StandardCharsets.UTF_8)));
+        when(exchange.getResponseHeaders()).thenReturn(new Headers());
+        responseBody = new ByteArrayOutputStream();
+        when(exchange.getResponseBody()).thenReturn(responseBody);
+        return exchange;
+    }
+}
