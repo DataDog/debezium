@@ -98,18 +98,24 @@ public class RegisterSchemasHandler implements HttpHandler {
             TableSchema tableSchema = entry.getValue();
             String originalTableName = tables.get(tableIndex++);
 
-            // Derive subject from topic name
+            // Derive subjects from topic name
             String topic = schemaReader.getTopicNamingStrategy().dataChangeTopic(tableId);
-            String subject = topic + "-value";
+            String valueSubject = topic + "-value";
+            String keySubject = topic + "-key";
 
-            // Convert envelope schema from Connect to Avro
+            // Convert schemas from Connect to Avro
             org.apache.kafka.connect.data.Schema envelopeConnectSchema = tableSchema.getEnvelopeSchema().schema();
-            org.apache.avro.Schema avroSchema = avroConverter.toAvro(envelopeConnectSchema);
+            org.apache.avro.Schema valueAvroSchema = avroConverter.toAvro(envelopeConnectSchema);
 
-            // Register in Schema Registry
+            org.apache.kafka.connect.data.Schema keyConnectSchema = tableSchema.keySchema();
+
+            // Register value schema (envelope) and, when a primary key exists, key schema
             try {
-                RegisteredSchema registered = publisher.register(originalTableName, subject, avroSchema);
-                results.add(registered);
+                results.add(publisher.register(originalTableName, valueSubject, valueAvroSchema));
+                if (keyConnectSchema != null) {
+                    org.apache.avro.Schema keyAvroSchema = avroConverter.toAvro(keyConnectSchema);
+                    results.add(publisher.register(originalTableName, keySubject, keyAvroSchema));
+                }
             }
             catch (SchemaIncompatibilityException e) {
                 LOGGER.warn("Schema incompatibility for table '{}': {}", originalTableName, e.getMessage());

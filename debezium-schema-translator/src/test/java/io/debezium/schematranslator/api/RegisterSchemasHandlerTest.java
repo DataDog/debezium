@@ -143,18 +143,22 @@ class RegisterSchemasHandlerTest {
     void successfulRegistrationReturns200WithResults() throws Exception {
         HttpExchange exchange = mockExchange("POST", "{\"tables\":[\"public.users\"]}");
         setupSchemaReaderAndConverter();
-        when(publisher.register(any(), any(), any()))
+        when(publisher.register(eq("public.users"), eq("test.public.users-value"), any()))
                 .thenReturn(new RegisteredSchema("public.users", "test.public.users-value", 1, 1));
+        when(publisher.register(eq("public.users"), eq("test.public.users-key"), any()))
+                .thenReturn(new RegisteredSchema("public.users", "test.public.users-key", 2, 1));
 
         handler.handle(exchange);
 
         verify(exchange).sendResponseHeaders(eq(200), anyLong());
         JsonNode response = objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
-        assertThat(response.get("registered_schemas")).hasSize(1);
-        JsonNode registered = response.get("registered_schemas").get(0);
-        assertThat(registered.get("table").asText()).isEqualTo("public.users");
-        assertThat(registered.get("subject").asText()).isEqualTo("test.public.users-value");
-        assertThat(registered.get("schema_id").asInt()).isEqualTo(1);
+        assertThat(response.get("registered_schemas")).hasSize(2);
+        JsonNode value = response.get("registered_schemas").get(0);
+        assertThat(value.get("subject").asText()).isEqualTo("test.public.users-value");
+        assertThat(value.get("schema_id").asInt()).isEqualTo(1);
+        JsonNode key = response.get("registered_schemas").get(1);
+        assertThat(key.get("subject").asText()).isEqualTo("test.public.users-key");
+        assertThat(key.get("schema_id").asInt()).isEqualTo(2);
     }
 
     // --- helpers ---
@@ -166,6 +170,8 @@ class RegisterSchemasHandlerTest {
         Envelope envelope = mock(Envelope.class);
         when(tableSchema.getEnvelopeSchema()).thenReturn(envelope);
         when(envelope.schema()).thenReturn(SchemaBuilder.struct().name("Envelope").build());
+        when(tableSchema.keySchema()).thenReturn(SchemaBuilder.struct().name("Key")
+                .field("id", org.apache.kafka.connect.data.Schema.INT32_SCHEMA).build());
 
         Map<TableId, TableSchema> schemas = new LinkedHashMap<>();
         schemas.put(tableId, tableSchema);
