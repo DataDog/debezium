@@ -1,25 +1,18 @@
-/*
- * Copyright Debezium Authors.
- *
- * Licensed under the Apache Software License version 2.0, available at http://www.apache.org/licenses/LICENSE-2.0
- */
 package io.debezium.schematranslator;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.util.concurrent.Executors;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.sun.net.httpserver.HttpServer;
-
 import io.debezium.schematranslator.api.HealthHandler;
 import io.debezium.schematranslator.api.RegisterSchemasHandler;
 import io.debezium.schematranslator.config.TranslatorConfig;
 import io.debezium.schematranslator.schema.AvroSchemaConverter;
 import io.debezium.schematranslator.schema.DebeziumSchemaReader;
 import io.debezium.schematranslator.schema.SchemaRegistryPublisher;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.util.concurrent.Executors;
 
 /**
  * Main entry point for the Debezium Schema Translator service.

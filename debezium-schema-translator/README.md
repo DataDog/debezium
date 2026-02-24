@@ -1,15 +1,15 @@
 # Debezium Schema Translator
 
-A lightweight HTTP service that reads PostgreSQL table schemas and registers them as Avro schemas with a Confluent Schema Registry.
+A lightweight HTTP service that reads Postgres table schemas and registers them as Avro schemas with a Confluent Schema Registry.
 
-It leverages Debezium's PostgreSQL connector internals to extract schema information without performing any change data capture.
+It leverages Debezium's Postgres connector internals to extract schema information without performing any change data capture.
 
 See the [ADR](https://docs.google.com/document/d/12jFNBuNmhXG2sPwgH7Hp9410fvSrbp4UudctiEhPLS8/edit?tab=t.0#heading=h.4ocygg1bsnsl) for the full design rationale and context.
 
 ## How it works
 
 For each requested table, the service:
-1. Reads the table schema from PostgreSQL using the Debezium PostgreSQL connector
+1. Reads the table schema from Postgres using the Debezium Postgres connector
 2. Converts the Kafka Connect schema to Avro format
 3. Registers both a value (envelope) schema and a key schema with the Schema Registry
 4. Returns the schema IDs and versions
@@ -24,11 +24,11 @@ All configuration is done via environment variables.
 
 | Variable              | Default                    | Required | Description                                          |
 |-----------------------|----------------------------|----------|------------------------------------------------------|
-| `POSTGRES_HOST`       | `localhost`                |          | PostgreSQL hostname                                  |
-| `POSTGRES_PORT`       | `5432`                     |          | PostgreSQL port                                      |
-| `POSTGRES_DATABASE`   |                            | Yes      | PostgreSQL database name                             |
-| `POSTGRES_USER`       | `postgres`                 |          | PostgreSQL user                                      |
-| `POSTGRES_PASSWORD`   |                            | Yes      | PostgreSQL password                                  |
+| `POSTGRES_HOST`       | `localhost`                |          | Postgres hostname                                  |
+| `POSTGRES_PORT`       | `5432`                     |          | Postgres port                                      |
+| `POSTGRES_DATABASE`   |                            | Yes      | Postgres database name                             |
+| `POSTGRES_USER`       | `postgres`                 |          | Postgres user                                      |
+| `POSTGRES_PASSWORD`   |                            | Yes      | Postgres password                                  |
 | `POSTGRES_SSL_MODE`   | `prefer`                   |          | SSL mode (`disable`, `prefer`, `require`, etc.)      |
 | `SCHEMA_REGISTRY_URL` | `http://localhost:8081`    |          | Confluent Schema Registry URL                        |
 | `TOPIC_PREFIX`        |                            | Yes      | Debezium topic prefix, used to derive subject names  |
@@ -91,7 +91,7 @@ Table names can be `schema.table` or just `table` (defaults to `public` schema).
 | 400  | Invalid request body or missing `tables` field            |
 | 405  | Wrong HTTP method                                         |
 | 409  | Schema incompatible with an already-registered version    |
-| 500  | PostgreSQL read error or Schema Registry error            |
+| 500  | Postgres read error or Schema Registry error            |
 
 Registration is idempotent: registering an identical schema multiple times returns the same schema ID and version.
 
@@ -111,7 +111,7 @@ mvn verify -pl debezium-schema-translator -DskipITs
 
 ## Local development
 
-A `docker-compose.yml` is provided that starts PostgreSQL, Kafka, Confluent Schema Registry, and the schema translator itself.
+A `docker-compose.yml` is provided that starts Postgres, Kafka, Confluent Schema Registry, and the schema translator itself.
 
 ```bash
 # Build the JAR first
@@ -123,7 +123,7 @@ docker-compose -f debezium-schema-translator/docker-compose.yml up -d
 # Check health
 curl -s http://localhost:8080/api/v1/schema-translator/health
 
-# Create a table in PostgreSQL, then register its schema
+# Create a table in Postgres, then register its schema
 # (replace "public.my_table" with an actual table in your database)
 curl -s -X POST http://localhost:8080/api/v1/schema-translator/register-schemas \
   -H 'Content-Type: application/json' \
