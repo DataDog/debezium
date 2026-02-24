@@ -1,23 +1,18 @@
-/*
- * Copyright Debezium Authors.
- *
- * Licensed under the Apache Software License version 2.0, available at http://www.apache.org/licenses/LICENSE-2.0
- */
 package io.debezium.schematranslator.config;
+
+import io.debezium.config.Configuration;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
 
-import io.debezium.config.Configuration;
-
 /**
  * Configuration loaded from environment variables.
- * Provides independent config groups for PostgreSQL and Schema Registry.
+ * Provides independent config groups for Postgres and Schema Registry.
  */
 public class TranslatorConfig {
 
-    // PostgreSQL connection settings
+    // Postgres connection settings
     private final String postgresHost;
     private final int postgresPort;
     private final String postgresDatabase;
@@ -47,7 +42,7 @@ public class TranslatorConfig {
     }
 
     /**
-     * Builds the Debezium {@link Configuration} for the PostgreSQL connector side.
+     * Builds the Debezium {@link Configuration} for the Postgres connector side.
      */
     public Configuration toDebeziumConfig() {
         Properties props = new Properties();

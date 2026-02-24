@@ -1,22 +1,10 @@
-/*
- * Copyright Debezium Authors.
- *
- * Licensed under the Apache Software License version 2.0, available at http://www.apache.org/licenses/LICENSE-2.0
- */
 package io.debezium.schematranslator.api;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
-import java.net.HttpURLConnection;
-import java.net.InetSocketAddress;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.Statement;
-import java.time.Duration;
-import java.util.Properties;
-
+import com.sun.net.httpserver.HttpServer;
+import io.debezium.config.Configuration;
+import io.debezium.schematranslator.schema.AvroSchemaConverter;
+import io.debezium.schematranslator.schema.DebeziumSchemaReader;
+import io.debezium.schematranslator.schema.SchemaRegistryPublisher;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,31 +17,26 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
-import com.sun.net.httpserver.HttpServer;
+import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.Statement;
+import java.time.Duration;
+import java.util.Properties;
 
-import io.debezium.config.Configuration;
-import io.debezium.schematranslator.schema.AvroSchemaConverter;
-import io.debezium.schematranslator.schema.DebeziumSchemaReader;
-import io.debezium.schematranslator.schema.SchemaRegistryPublisher;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * End-to-end integration test for {@link RegisterSchemasHandler}.
- * <p>
- * Exercises the full registration pipeline:
- * HTTP request → handler → PostgreSQL (Testcontainers) → Avro conversion
- * → real Confluent Schema Registry (Testcontainers) → HTTP response.
- * <p>
- * All three containers share a Docker network so Schema Registry can reach
- * Kafka's internal broker listener. A fresh component chain is created per
- * test to prevent Confluent client cache carryover between tests.
+ * Components are recreated per test to avoid Confluent client cache carryover between tests.
  */
 @Testcontainers
 class RegisterSchemasHandlerIT {
 
-    // -------------------------------------------------------------------------
-    // Shared Docker network and containers (started once for the test class)
-    // -------------------------------------------------------------------------
-
+    // Shared network so Schema Registry can reach Kafka's internal broker listener
     private static final Network network = Network.newNetwork();
 
     @Container
@@ -83,10 +66,6 @@ class RegisterSchemasHandlerIT {
                     .forStatusCode(200)
                     .withStartupTimeout(Duration.ofSeconds(30)));
 
-    // -------------------------------------------------------------------------
-    // Per-test handler server (recreated to avoid Confluent client cache carryover)
-    // -------------------------------------------------------------------------
-
     private HttpServer handlerServer;
     private int handlerPort;
     private DebeziumSchemaReader reader;
@@ -110,10 +89,6 @@ class RegisterSchemasHandlerIT {
         reader.close();
     }
 
-    // -------------------------------------------------------------------------
-    // Tests
-    // -------------------------------------------------------------------------
-
     @Test
     void registersSchemaEndToEnd() throws Exception {
         execute("CREATE TABLE IF NOT EXISTS public.products (" +
@@ -128,7 +103,7 @@ class RegisterSchemasHandlerIT {
         assertThat(conn.getResponseCode()).isEqualTo(200);
         assertThat(body).contains("\"subject\":\"test.public.products-value\"");
         assertThat(body).contains("\"subject\":\"test.public.products-key\"");
-        assertThat(body.split("\"table\":\"public.products\"", -1)).hasSize(3); // 2 occurrences → 3 parts
+        assertThat(body.split("\"table\":\"public.products\"", -1)).hasSize(3);
     }
 
     /**
@@ -147,15 +122,12 @@ class RegisterSchemasHandlerIT {
                 "  name TEXT NOT NULL" +
                 ")");
 
-        // First registration: value and key schemas at version 1
         HttpURLConnection conn1 = post("{\"tables\":[\"public.evolution_ok\"]}");
         assertThat(conn1.getResponseCode()).isEqualTo(200);
         conn1.getInputStream().readAllBytes(); // drain
 
-        // Evolve the table: nullable column → backward-compatible Avro optional field
         execute("ALTER TABLE public.evolution_ok ADD COLUMN notes TEXT");
 
-        // Second registration: value schema has a new optional field → version 2
         HttpURLConnection conn2 = post("{\"tables\":[\"public.evolution_ok\"]}");
         String body = new String(conn2.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
 
@@ -165,12 +137,8 @@ class RegisterSchemasHandlerIT {
     }
 
     /**
-     * Verifies that a backward-incompatible schema change is rejected by the real
-     * Schema Registry with a 409, and that the handler surfaces it as a 409 response.
-     * <p>
-     * Adding a NOT NULL column without a default produces a required (non-nullable)
-     * Avro field. Because the real Schema Registry enforces BACKWARD compatibility
-     * by default, it rejects this change without any mocking.
+     * A NOT NULL column without a default maps to a required Avro field, which is backward-incompatible.
+     * The empty table allows the DDL without a DEFAULT value.
      */
     @Test
     void incompatibleEvolutionReturns409() throws Exception {
@@ -180,27 +148,19 @@ class RegisterSchemasHandlerIT {
                 "  name TEXT NOT NULL" +
                 ")");
 
-        // First registration: v1 succeeds
         HttpURLConnection conn1 = post("{\"tables\":[\"public.evolution_bad\"]}");
         assertThat(conn1.getResponseCode()).isEqualTo(200);
         conn1.getInputStream().readAllBytes(); // drain
 
-        // Evolve the table: NOT NULL column without a default → required Avro field
-        // → backward-incompatible; the empty table allows the DDL without a DEFAULT.
         execute("ALTER TABLE public.evolution_bad ADD COLUMN required_flag TEXT NOT NULL");
 
-        // The real Schema Registry rejects the incompatible schema with 409
         HttpURLConnection conn2 = post("{\"tables\":[\"public.evolution_bad\"]}");
-        int responseCode = conn2.getResponseCode(); // triggers the response; populates getErrorStream()
+        int responseCode = conn2.getResponseCode();
         java.io.InputStream errStream = conn2.getErrorStream();
         String errorBody = errStream != null ? new String(errStream.readAllBytes(), StandardCharsets.UTF_8) : "";
         assertThat(responseCode).isEqualTo(409);
         assertThat(errorBody).contains("Schema for table public.evolution_bad is incompatible with an earlier schema for subject");
     }
-
-    // -------------------------------------------------------------------------
-    // Helpers
-    // -------------------------------------------------------------------------
 
     private static Configuration buildConfig() {
         Properties props = new Properties();

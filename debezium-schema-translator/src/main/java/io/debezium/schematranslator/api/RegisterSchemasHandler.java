@@ -1,25 +1,8 @@
-/*
- * Copyright Debezium Authors.
- *
- * Licensed under the Apache Software License version 2.0, available at http://www.apache.org/licenses/LICENSE-2.0
- */
 package io.debezium.schematranslator.api;
-
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
-
 import io.debezium.relational.TableId;
 import io.debezium.relational.TableSchema;
 import io.debezium.schematranslator.model.ErrorResponse;
@@ -30,6 +13,15 @@ import io.debezium.schematranslator.schema.AvroSchemaConverter;
 import io.debezium.schematranslator.schema.DebeziumSchemaReader;
 import io.debezium.schematranslator.schema.SchemaRegistryPublisher;
 import io.debezium.schematranslator.schema.SchemaRegistryPublisher.SchemaIncompatibilityException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Handles POST /api/v1/schema-translator/register-schemas.
@@ -79,13 +71,13 @@ public class RegisterSchemasHandler implements HttpHandler {
         List<String> tables = request.getTables();
         LOGGER.info("Processing register-schemas request for {} table(s): {}", tables.size(), tables);
 
-        // Read schemas from PostgreSQL
+        // Read schemas from Postgres
         Map<TableId, TableSchema> tableSchemas;
         try {
             tableSchemas = schemaReader.readSchemas(tables);
         }
         catch (Exception e) {
-            LOGGER.error("Failed to read schemas from PostgreSQL", e);
+            LOGGER.error("Failed to read schemas from Postgres", e);
             sendJson(exchange, 500, new ErrorResponse(e.getMessage()));
             return;
         }

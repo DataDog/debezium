@@ -1,21 +1,4 @@
-/*
- * Copyright Debezium Authors.
- *
- * Licensed under the Apache Software License version 2.0, available at http://www.apache.org/licenses/LICENSE-2.0
- */
 package io.debezium.schematranslator.schema;
-
-import java.nio.charset.Charset;
-import java.sql.SQLException;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
-
-import org.apache.kafka.connect.data.Schema;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import io.debezium.config.Configuration;
 import io.debezium.connector.postgresql.PostgresConnectorConfig;
@@ -31,14 +14,24 @@ import io.debezium.relational.TableSchemaBuilder;
 import io.debezium.relational.Tables;
 import io.debezium.schema.SchemaNameAdjuster;
 import io.debezium.spi.topic.TopicNamingStrategy;
+import org.apache.kafka.connect.data.Schema;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.nio.charset.Charset;
+import java.sql.SQLException;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
- * Reads PostgreSQL table schemas using Debezium's postgres connector machinery.
+ * Reads Postgres table schemas using Debezium's postgres connector machinery.
  * Mirrors the initialization from {@code PostgresConnectorTask.start()} but strips out
  * everything CDC-related — no replication slots, no streaming, no snapshotter.
- *
- * The PostgreSQL connection is initialized lazily on the first call to {@link #readSchemas},
- * so the service can start without PostgreSQL being available. The connection is then
+ * <p>
+ * The Postgres connection is initialized lazily on the first call to {@link #readSchemas},
+ * so the service can start without Postgres being available. The connection is then
  * reused for subsequent calls.
  */
 public class DebeziumSchemaReader implements AutoCloseable {
@@ -73,7 +66,7 @@ public class DebeziumSchemaReader implements AutoCloseable {
         // (mirrors PostgresSchema.parse() which is protected)
         List<TableId> requestedIds = tableNames.stream()
                 .map(DebeziumSchemaReader::parseTableId)
-                .collect(Collectors.toList());
+                .toList();
 
         Set<TableId> requestedSet = Set.copyOf(requestedIds);
         Tables.TableFilter filter = Tables.TableFilter.fromPredicate(requestedSet::contains);
@@ -96,7 +89,7 @@ public class DebeziumSchemaReader implements AutoCloseable {
     }
 
     /**
-     * Initializes the PostgreSQL connection and related components on the first call.
+     * Initializes the Postgres connection and related components on the first call.
      * Subsequent calls are no-ops if the connection is already established.
      * Uses double-checked locking to avoid redundant initialization under concurrency.
      */
@@ -108,7 +101,7 @@ public class DebeziumSchemaReader implements AutoCloseable {
             if (pgConnection != null) {
                 return;
             }
-            LOGGER.info("Initializing PostgreSQL connection");
+            LOGGER.info("Initializing Postgres connection");
             initConnection();
         }
     }
@@ -116,26 +109,21 @@ public class DebeziumSchemaReader implements AutoCloseable {
     private void initConnection() {
         final SchemaNameAdjuster schemaNameAdjuster = connectorConfig.schemaNameAdjuster();
 
-        // Step 1: Get database charset (same pattern as PostgresConnectorTask line 109)
         final Charset databaseCharset;
         try (PostgresConnection temp = new PostgresConnection(
                 connectorConfig.getJdbcConfig(), PostgresConnection.CONNECTION_GENERAL)) {
             databaseCharset = temp.getDatabaseCharset();
         }
 
-        // Step 2: Build value converter builder
         final PostgresValueConverterBuilder vcBuilder = (typeRegistry) -> PostgresValueConverter.of(
                 connectorConfig, databaseCharset, typeRegistry);
 
-        // Step 3: Create main connection (initialises TypeRegistry internally)
         final PostgresConnection connection = new PostgresConnection(
                 connectorConfig.getJdbcConfig(), vcBuilder, PostgresConnection.CONNECTION_GENERAL);
 
-        // Step 4: Extract components
         final PostgresDefaultValueConverter defaultValueConverter = connection.getDefaultValueConverter();
         final PostgresValueConverter valueConverter = vcBuilder.build(connection.getTypeRegistry());
 
-        // Step 5: Build TableSchemaBuilder (mirrors PostgresSchema.getTableSchemaBuilder())
         final Schema sourceInfoSchema = connectorConfig.getSourceInfoStructMaker().schema();
         final CustomConverterRegistry customConverterRegistry = new CustomConverterRegistry(null);
         this.tableSchemaBuilder = new TableSchemaBuilder(
@@ -143,9 +131,8 @@ public class DebeziumSchemaReader implements AutoCloseable {
                 customConverterRegistry, sourceInfoSchema,
                 connectorConfig.getFieldNamer(), false);
 
-        // Assign last so that pgConnection != null only once fully initialized
         this.pgConnection = connection;
-        LOGGER.info("PostgreSQL connection initialized successfully");
+        LOGGER.info("Postgres connection initialized successfully");
     }
 
     /**
