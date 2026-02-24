@@ -52,7 +52,7 @@ public class App {
         // Start HTTP server
         HttpServer server = HttpServer.create(new InetSocketAddress(config.getHttpPort()), 0);
         server.createContext(
-                "/api/v1/schema-translator/register-schemas",
+                "/api/v1/schema-translator/schemas",
                 new RegisterSchemasHandler(schemaReader, avroConverter, publisher));
         server.createContext(
                 "/api/v1/schema-translator/health",
