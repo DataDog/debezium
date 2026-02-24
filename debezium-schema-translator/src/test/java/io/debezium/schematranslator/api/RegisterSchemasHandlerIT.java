@@ -99,7 +99,7 @@ class RegisterSchemasHandlerIT {
         RegisterSchemasHandler handler = new RegisterSchemasHandler(reader, new AvroSchemaConverter(), publisher);
 
         handlerServer = HttpServer.create(new InetSocketAddress(0), 0);
-        handlerServer.createContext("/api/v1/schema-translator/register-schemas", handler);
+        handlerServer.createContext("/api/v1/schema-translator/schemas", handler);
         handlerServer.start();
         handlerPort = handlerServer.getAddress().getPort();
     }
@@ -219,7 +219,7 @@ class RegisterSchemasHandlerIT {
 
     private HttpURLConnection post(String jsonBody) throws Exception {
         URL url = new URL("http://localhost:" + handlerPort
-                + "/api/v1/schema-translator/register-schemas");
+                + "/api/v1/schema-translator/schemas");
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
         conn.setRequestProperty("Content-Type", "application/json");
