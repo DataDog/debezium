@@ -51,6 +51,7 @@ jobs:
       mariadb-ddl-parser-changed: ${{ steps.changed-files-mariadb-ddl-parser.outputs.any_changed }}
       documentation-only-changed: ${{ steps.changed-files-documentation.outputs.only_changed }}
       storage-changed: ${{ steps.changed-files-storage.outputs.any_changed }}
+      schema-translator-changed: ${{ steps.changed-files-schema-translator.outputs.any_changed }}
     steps:
       - name: Checkout Action
         uses: actions/checkout@v7
@@ -211,6 +212,13 @@ jobs:
         with:
           files: |
             debezium-openlineage/**
+
+      - name: Get modified files (Schema Translator)
+        id: changed-files-schema-translator
+        uses: tj-actions/changed-files@v46.0.5
+        with:
+          files: |
+            debezium-schema-translator/**
     
       
 
@@ -653,6 +661,18 @@ jobs:
       - name: Checkout Action
         uses: actions/checkout@v7
       - uses: ./.github/actions/build-debezium-storage
+        with:
+          maven-cache-key: maven-debezium-test-build-${{ hashFiles('**/pom.xml') }}
+
+  build_schema_translator:
+    name: "Schema Translator"
+    needs: [ check_style, file_changes ]
+    runs-on: ubuntu-latest
+    if: ${{ needs.file_changes.outputs.common-changed == 'true' || needs.file_changes.outputs.schema-translator-changed == 'true' }}
+    steps:
+      - name: Checkout Action
+        uses: actions/checkout@v4
+      - uses: ./.github/actions/build-debezium-schema-translator
         with:
           maven-cache-key: maven-debezium-test-build-${{ hashFiles('**/pom.xml') }}
 
