@@ -1,0 +1,88 @@
+version: "3.8"
+
+# Temporary docker-compose for local testing of debezium-schema-translator.
+#
+# Build the JAR first:
+#   mvn clean package -pl debezium-schema-translator -am -DskipTests
+#
+# Start everything (dependencies + schema translator):
+#   docker-compose up -d
+#
+# Test:
+#   curl -s http://localhost:8080/api/v1/schema-translator/health
+#   curl -s -X POST http://localhost:8080/api/v1/schema-translator/schemas \
+#     -H 'Content-Type: application/json' \
+#     -d '{"tables": ["public.users"]}'
+#
+# Inspect registered schemas:
+#   curl -s http://localhost:8081/subjects
+
+services:
+
+  postgres:
+    image: postgres:17
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: testdb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.1
+    depends_on:
+      - kafka
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/subjects"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  schema-translator:
+    image: eclipse-temurin:17-jre
+    depends_on:
+      postgres:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./target:/app
+    entrypoint: ["sh", "-c", "java -jar /app/debezium-schema-translator-*-shaded.jar"]
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DATABASE: testdb
+      POSTGRES_PASSWORD: postgres
+      TOPIC_PREFIX: test
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
