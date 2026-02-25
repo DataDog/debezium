@@ -76,7 +76,8 @@ class RegisterSchemasHandlerTest {
         handler.handle(exchange);
 
         verify(exchange).sendResponseHeaders(eq(400), anyLong());
-        assertThat(responseBody.toString(StandardCharsets.UTF_8)).contains("tables");
+        JsonNode response = objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
+        assertThat(response.get("error").get("message").asText()).contains("tables");
     }
 
     @Test
@@ -96,7 +97,8 @@ class RegisterSchemasHandlerTest {
         handler.handle(exchange);
 
         verify(exchange).sendResponseHeaders(eq(500), anyLong());
-        assertThat(responseBody.toString(StandardCharsets.UTF_8)).contains("Connection refused");
+        JsonNode response = objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
+        assertThat(response.get("error").get("message").asText()).contains("Connection refused");
     }
 
     @Test
@@ -109,7 +111,30 @@ class RegisterSchemasHandlerTest {
         handler.handle(exchange);
 
         verify(exchange).sendResponseHeaders(eq(409), anyLong());
-        assertThat(responseBody.toString(StandardCharsets.UTF_8)).contains("incompatible schema");
+        JsonNode response = objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
+        assertThat(response.get("error").get("message").asText())
+                .isEqualTo("One or more schemas are incompatible with an existing version");
+        assertThat(response.get("error").get("errors")).hasSize(1);
+        assertThat(response.get("error").get("errors").get(0).asText()).contains("incompatible schema");
+    }
+
+    @Test
+    void multipleSchemaIncompatibilitiesReturnsAllErrors() throws Exception {
+        HttpExchange exchange = mockExchange("POST", "{\"tables\":[\"public.users\",\"public.orders\"]}");
+        setupSchemaReaderAndConverterForTables();
+        doThrow(new SchemaIncompatibilityException("incompatible schema for users", new Exception()))
+                .when(publisher).register(eq("public.users"), any(), any());
+        doThrow(new SchemaIncompatibilityException("incompatible schema for orders", new Exception()))
+                .when(publisher).register(eq("public.orders"), any(), any());
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(409), anyLong());
+        JsonNode response = objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
+        JsonNode errors = response.get("error").get("errors");
+        assertThat(errors).hasSize(2);
+        assertThat(errors.get(0).asText()).contains("incompatible schema for users");
+        assertThat(errors.get(1).asText()).contains("incompatible schema for orders");
     }
 
     @Test
@@ -122,7 +147,8 @@ class RegisterSchemasHandlerTest {
         handler.handle(exchange);
 
         verify(exchange).sendResponseHeaders(eq(500), anyLong());
-        assertThat(responseBody.toString(StandardCharsets.UTF_8)).contains("network error");
+        JsonNode response = objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
+        assertThat(response.get("error").get("message").asText()).contains("network error");
     }
 
     @Test
@@ -145,6 +171,37 @@ class RegisterSchemasHandlerTest {
         JsonNode key = response.get("registered_schemas").get(1);
         assertThat(key.get("subject").asText()).isEqualTo("test.public.users-key");
         assertThat(key.get("schema_id").asInt()).isEqualTo(2);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void setupSchemaReaderAndConverterForTables() throws Exception {
+        TableId usersId = new TableId(null, "public", "users");
+        TableId ordersId = new TableId(null, "public", "orders");
+
+        TableSchema usersSchema = mock(TableSchema.class);
+        Envelope usersEnvelope = mock(Envelope.class);
+        when(usersSchema.getEnvelopeSchema()).thenReturn(usersEnvelope);
+        when(usersEnvelope.schema()).thenReturn(SchemaBuilder.struct().name("UsersEnvelope").build());
+        when(usersSchema.keySchema()).thenReturn(null);
+
+        TableSchema ordersSchema = mock(TableSchema.class);
+        Envelope ordersEnvelope = mock(Envelope.class);
+        when(ordersSchema.getEnvelopeSchema()).thenReturn(ordersEnvelope);
+        when(ordersEnvelope.schema()).thenReturn(SchemaBuilder.struct().name("OrdersEnvelope").build());
+        when(ordersSchema.keySchema()).thenReturn(null);
+
+        Map<TableId, TableSchema> schemas = new LinkedHashMap<>();
+        schemas.put(usersId, usersSchema);
+        schemas.put(ordersId, ordersSchema);
+        when(schemaReader.readSchemas(List.of("public.users", "public.orders"))).thenReturn(schemas);
+
+        TopicNamingStrategy<TableId> strategy = mock(TopicNamingStrategy.class);
+        when(strategy.dataChangeTopic(usersId)).thenReturn("test.public.users");
+        when(strategy.dataChangeTopic(ordersId)).thenReturn("test.public.orders");
+        when(schemaReader.getTopicNamingStrategy()).thenReturn(strategy);
+
+        when(avroConverter.toAvro(any()))
+                .thenReturn(org.apache.avro.Schema.create(org.apache.avro.Schema.Type.STRING));
     }
 
     @SuppressWarnings("unchecked")
