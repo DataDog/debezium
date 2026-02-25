@@ -155,11 +155,14 @@ class RegisterSchemasHandlerIT {
         execute("ALTER TABLE public.evolution_bad ADD COLUMN required_flag TEXT NOT NULL");
 
         HttpURLConnection conn2 = post("{\"tables\":[\"public.evolution_bad\"]}");
-        int responseCode = conn2.getResponseCode();
+        assertThat(conn2.getResponseCode()).isEqualTo(409);
         java.io.InputStream errStream = conn2.getErrorStream();
         String errorBody = errStream != null ? new String(errStream.readAllBytes(), StandardCharsets.UTF_8) : "";
-        assertThat(responseCode).isEqualTo(409);
-        assertThat(errorBody).contains("Schema for table public.evolution_bad is incompatible with an earlier schema for subject");
+        com.fasterxml.jackson.databind.JsonNode errorJson = new com.fasterxml.jackson.databind.ObjectMapper().readTree(errorBody);
+        assertThat(errorJson.get("error").get("message").asText())
+                .isEqualTo("One or more schemas are incompatible with an existing version");
+        assertThat(errorJson.get("error").get("errors").get(0).asText())
+                .contains("Schema for table public.evolution_bad is incompatible with an earlier schema for subject");
     }
 
     private static Configuration buildConfig() {
