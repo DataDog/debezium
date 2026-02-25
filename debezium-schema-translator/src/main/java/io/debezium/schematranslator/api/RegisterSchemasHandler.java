@@ -24,7 +24,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Handles POST /api/v1/schema-translator/register-schemas.
+ * Handles POST /api/v1/schema-translator/schemas.
  */
 public class RegisterSchemasHandler implements HttpHandler {
 
@@ -69,7 +69,7 @@ public class RegisterSchemasHandler implements HttpHandler {
         }
 
         List<String> tables = request.getTables();
-        LOGGER.info("Processing register-schemas request for {} table(s): {}", tables.size(), tables);
+        LOGGER.info("Processing schemas request for {} table(s): {}", tables.size(), tables);
 
         // Read schemas from Postgres
         Map<TableId, TableSchema> tableSchemas;

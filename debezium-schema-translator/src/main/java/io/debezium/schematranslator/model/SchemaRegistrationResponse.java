@@ -5,7 +5,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
 
 /**
- * Response body for a successful POST /api/v1/schema-translator/register-schemas.
+ * Response body for a successful POST /api/v1/schema-translator/schemas.
  */
 public class SchemaRegistrationResponse {
 

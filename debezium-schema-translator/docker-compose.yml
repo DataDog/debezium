@@ -10,7 +10,7 @@ version: "3.8"
 #
 # Test:
 #   curl -s http://localhost:8080/api/v1/schema-translator/health
-#   curl -s -X POST http://localhost:8080/api/v1/schema-translator/register-schemas \
+#   curl -s -X POST http://localhost:8080/api/v1/schema-translator/schemas \
 #     -H 'Content-Type: application/json' \
 #     -d '{"tables": ["public.users"]}'
 #

@@ -49,7 +49,7 @@ GET /api/v1/schema-translator/health
 ### Register schemas
 
 ```
-POST /api/v1/schema-translator/register-schemas
+POST /api/v1/schema-translator/schemas
 Content-Type: application/json
 ```
 
@@ -125,7 +125,7 @@ curl -s http://localhost:8080/api/v1/schema-translator/health
 
 # Create a table in Postgres, then register its schema
 # (replace "public.my_table" with an actual table in your database)
-curl -s -X POST http://localhost:8080/api/v1/schema-translator/register-schemas \
+curl -s -X POST http://localhost:8080/api/v1/schema-translator/schemas \
   -H 'Content-Type: application/json' \
   -d '{"tables": ["public.my_table"]}'
 
