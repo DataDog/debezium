@@ -31,17 +31,6 @@ public class App {
         AvroSchemaConverter avroConverter = new AvroSchemaConverter();
         SchemaRegistryPublisher publisher = new SchemaRegistryPublisher(config.getSchemaRegistryUrl());
 
-        // Register shutdown hook to close JDBC connection cleanly
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            LOGGER.info("Shutting down...");
-            try {
-                schemaReader.close();
-            }
-            catch (Exception e) {
-                LOGGER.warn("Error during shutdown", e);
-            }
-        }));
-
         // Start HTTP server
         HttpServer server = HttpServer.create(new InetSocketAddress(config.getHttpPort()), 0);
         server.createContext(
@@ -54,5 +43,17 @@ public class App {
         server.start();
 
         LOGGER.info("Debezium Schema Translator is running on port {}", config.getHttpPort());
+
+        // Register shutdown hook to stop the HTTP server and close the JDBC connection cleanly
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            LOGGER.info("Shutting down...");
+            server.stop(0);
+            try {
+                schemaReader.close();
+            }
+            catch (Exception e) {
+                LOGGER.warn("Error during shutdown", e);
+            }
+        }));
     }
 }
