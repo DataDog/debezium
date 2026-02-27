@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -286,6 +287,10 @@ public abstract class AbstractIncrementalSnapshotChangeEventSource<P extends Par
                                             ColumnUtils.toArray(rs, currentTable)));
                                 });
                         context.maximumKey(maximumKey);
+                        OptionalLong estimated = estimateRowCount(currentTableId);
+                        if (estimated.isPresent()) {
+                            progressListener.totalRowsToScan(partition, currentTableId, estimated.getAsLong());
+                        }
                     }
                     catch (SQLException e) {
                         LOGGER.error("Failed to read maximum key for table {}", currentTableId, e);
@@ -740,6 +745,18 @@ public abstract class AbstractIncrementalSnapshotChangeEventSource<P extends Par
         // since schema changes are not emitted as change events in the same way that they are for
         // connectors like MySQL or Oracle
         return table;
+    }
+
+    /**
+     * Returns an estimated row count for the given table, used to populate the {@code TotalRowsToScan} JMX metric.
+     * The default implementation returns an empty optional (no estimate). Connectors may override this method to
+     * provide a fast catalog-based estimate without performing a full table scan.
+     *
+     * @param tableId the table for which to estimate the row count
+     * @return an {@link OptionalLong} containing the estimate, or empty if not available
+     */
+    protected OptionalLong estimateRowCount(TableId tableId) {
+        return OptionalLong.empty();
     }
 
     /**
