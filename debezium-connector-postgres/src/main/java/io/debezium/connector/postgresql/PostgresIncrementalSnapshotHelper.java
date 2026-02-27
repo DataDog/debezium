@@ -11,6 +11,7 @@ import java.util.OptionalLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import io.debezium.connector.postgresql.connection.PostgresConnection;
 import io.debezium.relational.TableId;
 
 /**
