@@ -171,20 +171,7 @@ public class PostgresReadOnlyIncrementalSnapshotChangeEventSource<P extends Post
 
     @Override
     protected OptionalLong estimateRowCount(TableId tableId) {
-        try {
-            Long estimate = jdbcConnection.prepareQueryAndMap(
-                    "SELECT n_live_tup FROM pg_stat_user_tables WHERE schemaname = ? AND relname = ?",
-                    statement -> {
-                        statement.setString(1, tableId.schema());
-                        statement.setString(2, tableId.table());
-                    },
-                    rs -> rs.next() ? rs.getLong(1) : null);
-            return estimate != null ? OptionalLong.of(estimate) : OptionalLong.empty();
-        }
-        catch (SQLException e) {
-            LOGGER.warn("Failed to estimate row count for table '{}': {}", tableId, e.getMessage());
-            return OptionalLong.empty();
-        }
+        return PostgresIncrementalSnapshotHelper.estimateRowCount(jdbcConnection, tableId);
     }
 
     private void readUntilNewTransactionChange(P partition, OffsetContext offsetContext) throws InterruptedException {
