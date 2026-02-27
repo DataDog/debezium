@@ -43,6 +43,7 @@ public class SnapshotMeter implements SnapshotMetricsMXBean {
     private final AtomicLong stopPauseTime = new AtomicLong();
     private final AtomicLong pauseDuration = new AtomicLong();
     private final ConcurrentMap<String, Long> rowsScanned = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Long> totalRowsToScan = new ConcurrentHashMap<>();
 
     private final ConcurrentMap<String, String> remainingTables = new ConcurrentHashMap<>();
 
@@ -212,6 +213,15 @@ public class SnapshotMeter implements SnapshotMetricsMXBean {
         return rowsScanned;
     }
 
+    public void totalRowsToScan(TableId tableId, long estimatedRows) {
+        totalRowsToScan.put(tableId.toString(), estimatedRows);
+    }
+
+    @Override
+    public ConcurrentMap<String, Long> getTotalRowsToScan() {
+        return totalRowsToScan;
+    }
+
     public void currentChunk(String chunkId, Object[] chunkFrom, Object[] chunkTo) {
         this.chunkId.set(chunkId);
         this.chunkFrom.set(chunkFrom);
@@ -281,6 +291,7 @@ public class SnapshotMeter implements SnapshotMetricsMXBean {
         stopPauseTime.set(0);
         pauseDuration.set(0);
         rowsScanned.clear();
+        totalRowsToScan.clear();
         remainingTables.clear();
         capturedTables.clear();
         chunkId.set(null);

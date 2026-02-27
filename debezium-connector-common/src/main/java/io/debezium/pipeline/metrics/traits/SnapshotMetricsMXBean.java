@@ -32,6 +32,8 @@ public interface SnapshotMetricsMXBean extends SchemaMetricsMXBean {
 
     Map<String, Long> getRowsScanned();
 
+    Map<String, Long> getTotalRowsToScan();
+
     String getChunkId();
 
     String getChunkFrom();
