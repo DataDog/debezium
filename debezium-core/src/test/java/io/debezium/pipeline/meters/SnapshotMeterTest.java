@@ -63,6 +63,18 @@ public class SnapshotMeterTest {
     }
 
     @Test
+    public void totalRowsToScanCanBeReconciledToActualCount() {
+        TableId table = TableId.parse("db.public.orders");
+
+        meter.totalRowsToScan(table, 1000L);
+        // Snapshot finishes with 950 actual rows; reconcile so metric reaches 100%.
+        meter.totalRowsToScan(table, 950L);
+
+        assertThat(meter.getTotalRowsToScan())
+                .containsEntry(table.toString(), 950L);
+    }
+
+    @Test
     public void resetClearsTotalRowsToScanAlongsideRowsScanned() {
         TableId table = TableId.parse("db.public.orders");
         meter.rowsScanned(table, 500L);
