@@ -25,10 +25,13 @@ final class PostgresIncrementalSnapshotHelper {
     }
 
     /**
-     * Returns an estimated row count for the given table by querying {@code pg_stat_user_tables.n_live_tup}.
-     * This is a catalog-level estimate maintained by autovacuum and does not require a full table scan or lock.
-     * Returns an empty optional when the estimate is unavailable or zero (e.g. the table has not yet been
-     * analyzed by autovacuum, making a zero value unreliable as a progress estimate).
+     * Returns an estimated row count for the given table.
+     * <p>
+     * First tries {@code pg_stat_user_tables.n_live_tup}, a live-tuple estimate maintained by autovacuum.
+     * If that value is zero (e.g. autovacuum has not yet run on the table), falls back to
+     * {@code pg_class.reltuples}, the planner's row-count estimate which is populated after the first
+     * {@code ANALYZE} or table creation. Returns an empty optional only when both sources are unavailable
+     * or non-positive.
      *
      * @param connection the PostgreSQL JDBC connection
      * @param tableId    the table to estimate
@@ -37,14 +40,18 @@ final class PostgresIncrementalSnapshotHelper {
     static OptionalLong estimateRowCount(PostgresConnection connection, TableId tableId) {
         try {
             Long estimate = connection.prepareQueryAndMap(
-                    "SELECT n_live_tup FROM pg_stat_user_tables WHERE schemaname = ? AND relname = ?",
+                    "SELECT CASE WHEN s.n_live_tup > 0 THEN s.n_live_tup" +
+                            "          WHEN c.reltuples > 0 THEN c.reltuples::bigint" +
+                            "          ELSE 0 END" +
+                            " FROM pg_stat_user_tables s" +
+                            " JOIN pg_class c ON c.relname = s.relname" +
+                            "  AND c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = s.schemaname)" +
+                            " WHERE s.schemaname = ? AND s.relname = ?",
                     statement -> {
                         statement.setString(1, tableId.schema());
                         statement.setString(2, tableId.table());
                     },
                     rs -> rs.next() ? rs.getLong(1) : null);
-            // n_live_tup is 0 for tables that have never been analyzed; treat as unknown rather
-            // than reporting a misleading zero total.
             if (estimate == null || estimate == 0L) {
                 return OptionalLong.empty();
             }
