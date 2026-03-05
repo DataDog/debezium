@@ -78,7 +78,6 @@ public abstract class AbstractIncrementalSnapshotChangeEventSource<P extends Par
     private final SnapshotProgressListener<P> progressListener;
     private final DataChangeEventListener<P> dataListener;
     private long totalRowsScanned = 0;
-    private boolean rowCountEstimated = false;
 
     private Table currentTable;
 
@@ -291,7 +290,6 @@ public abstract class AbstractIncrementalSnapshotChangeEventSource<P extends Par
                         OptionalLong estimated = estimateRowCount(currentTableId);
                         if (estimated.isPresent()) {
                             progressListener.totalRowsToScan(partition, currentTableId, estimated.getAsLong());
-                            rowCountEstimated = true;
                         }
                     }
                     catch (SQLException e) {
@@ -688,11 +686,10 @@ public abstract class AbstractIncrementalSnapshotChangeEventSource<P extends Par
 
     private void tableScanCompleted(P partition) {
         progressListener.dataCollectionSnapshotCompleted(partition, currentTable.id(), totalRowsScanned);
-        if (rowCountEstimated) {
-            // Reconcile the estimate with the actual scanned count so the metric reaches exactly 100%.
-            progressListener.totalRowsToScan(partition, currentTable.id(), totalRowsScanned);
-            rowCountEstimated = false;
-        }
+        // Always set totalRowsToScan to the actual scanned count on completion.
+        // If an estimate was previously set, this reconciles it to exactly 100%.
+        // If no estimate was available (e.g. statistics not yet populated), this ensures the metric is populated.
+        progressListener.totalRowsToScan(partition, currentTable.id(), totalRowsScanned);
         totalRowsScanned = 0;
         // Reset chunk/table information in metrics
         progressListener.currentChunk(partition, null, null, null, null);
