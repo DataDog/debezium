@@ -49,17 +49,19 @@ public class SchemaRegistryPublisher {
         }
         catch (RestClientException e) {
             if (e.getStatus() == 409) {
-                String oldSchema = null;
-                String incompatibilityMessage = "Schema for table " + tableName
-                        + " is incompatible with an earlier schema for subject \""
-                        + subject + "\": " + e.getMessage();
+                String oldSchema;
                 try {
                     oldSchema = client.getLatestSchemaMetadata(subject).getSchema();
                 } catch (Exception fetchEx) {
                     LOGGER.warn("Could not fetch existing schema for subject '{}'", subject, fetchEx);
-                    incompatibilityMessage += " (could not retrieve existing schema: " + fetchEx.getMessage() + ")";
+                    oldSchema = "could not retrieve existing schema: " + fetchEx.getMessage();
                 }
-                throw new SchemaIncompatibilityException(incompatibilityMessage, e, oldSchema, avroSchema.toString());
+                throw new SchemaIncompatibilityException(
+                        "Schema for table " + tableName + " is incompatible with an earlier schema for subject \""
+                                + subject + "\": " + e.getMessage(),
+                        e,
+                        oldSchema,
+                        avroSchema.toString());
             }
             throw new IOException("Schema Registry error (HTTP " + e.getStatus() + "): " + e.getMessage(), e);
         }

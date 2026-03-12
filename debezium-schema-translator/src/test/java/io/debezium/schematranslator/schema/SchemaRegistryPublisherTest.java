@@ -74,10 +74,9 @@ class SchemaRegistryPublisherTest {
 
             assertThatThrownBy(() -> publisher.register("public.users", "test.public.users-value", AVRO_SCHEMA))
                     .isInstanceOf(SchemaIncompatibilityException.class)
-                    .hasMessageContaining("could not retrieve existing schema: connection refused")
                     .satisfies(ex -> {
                         SchemaIncompatibilityException sie = (SchemaIncompatibilityException) ex;
-                        assertThat(sie.getOldSchema()).isNull();
+                        assertThat(sie.getOldSchema()).isEqualTo("could not retrieve existing schema: connection refused");
                         assertThat(sie.getNewSchema()).isEqualTo(AVRO_SCHEMA.toString());
                     });
         }
