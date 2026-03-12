@@ -22,12 +22,42 @@ public class ErrorResponse {
         this.error = new ErrorDetail(message, null);
     }
 
-    public ErrorResponse(String message, List<String> errors) {
+    public ErrorResponse(String message, List<SchemaError> errors) {
         this.error = new ErrorDetail(message, errors);
     }
 
     public ErrorDetail getError() {
         return error;
+    }
+
+    public static class SchemaError {
+
+        @JsonProperty("message")
+        private final String message;
+
+        @JsonProperty("old_schema")
+        private final String oldSchema;
+
+        @JsonProperty("new_schema")
+        private final String newSchema;
+
+        public SchemaError(String message, String oldSchema, String newSchema) {
+            this.message = message;
+            this.oldSchema = oldSchema;
+            this.newSchema = newSchema;
+        }
+
+        public String getMessage() {
+            return message;
+        }
+
+        public String getOldSchema() {
+            return oldSchema;
+        }
+
+        public String getNewSchema() {
+            return newSchema;
+        }
     }
 
     public static class ErrorDetail {
@@ -37,9 +67,9 @@ public class ErrorResponse {
 
         @JsonProperty("errors")
         @JsonInclude(JsonInclude.Include.NON_NULL)
-        private final List<String> errors;
+        private final List<SchemaError> errors;
 
-        public ErrorDetail(String message, List<String> errors) {
+        public ErrorDetail(String message, List<SchemaError> errors) {
             this.message = message;
             this.errors = errors;
         }
@@ -48,7 +78,7 @@ public class ErrorResponse {
             return message;
         }
 
-        public List<String> getErrors() {
+        public List<SchemaError> getErrors() {
             return errors;
         }
     }
