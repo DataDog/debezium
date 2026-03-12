@@ -49,10 +49,18 @@ public class SchemaRegistryPublisher {
         }
         catch (RestClientException e) {
             if (e.getStatus() == 409) {
+                String oldSchema = null;
+                try {
+                    oldSchema = client.getLatestSchemaMetadata(subject).getSchema();
+                } catch (Exception fetchEx) {
+                    LOGGER.warn("Could not fetch existing schema for subject '{}'", subject, fetchEx);
+                }
                 throw new SchemaIncompatibilityException(
                         "Schema for table " + tableName + " is incompatible with an earlier schema for subject \""
                                 + subject + "\": " + e.getMessage(),
-                        e);
+                        e,
+                        oldSchema,
+                        avroSchema.toString());
             }
             throw new IOException("Schema Registry error (HTTP " + e.getStatus() + "): " + e.getMessage(), e);
         }
@@ -62,8 +70,21 @@ public class SchemaRegistryPublisher {
      * Thrown when a 409 Conflict is returned by the Schema Registry.
      */
     public static class SchemaIncompatibilityException extends Exception {
-        public SchemaIncompatibilityException(String message, Throwable cause) {
+        private final String oldSchema;
+        private final String newSchema;
+
+        public SchemaIncompatibilityException(String message, Throwable cause, String oldSchema, String newSchema) {
             super(message, cause);
+            this.oldSchema = oldSchema;
+            this.newSchema = newSchema;
+        }
+
+        public String getOldSchema() {
+            return oldSchema;
+        }
+
+        public String getNewSchema() {
+            return newSchema;
         }
     }
 }

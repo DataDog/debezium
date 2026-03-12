@@ -105,7 +105,8 @@ class RegisterSchemasHandlerTest {
     void schemaIncompatibilityReturns409() throws Exception {
         HttpExchange exchange = mockExchange("POST", "{\"tables\":[\"public.users\"]}");
         setupSchemaReaderAndConverter();
-        doThrow(new SchemaIncompatibilityException("incompatible schema", new Exception()))
+        doThrow(new SchemaIncompatibilityException("incompatible schema", new Exception(),
+                "{\"old\":true}", "{\"new\":true}"))
                 .when(publisher).register(any(), any(), any());
 
         handler.handle(exchange);
@@ -115,16 +116,21 @@ class RegisterSchemasHandlerTest {
         assertThat(response.get("error").get("message").asText())
                 .isEqualTo("One or more schemas are incompatible with an existing version");
         assertThat(response.get("error").get("errors")).hasSize(1);
-        assertThat(response.get("error").get("errors").get(0).asText()).contains("incompatible schema");
+        JsonNode error = response.get("error").get("errors").get(0);
+        assertThat(error.get("message").asText()).contains("incompatible schema");
+        assertThat(error.get("old_schema").asText()).isEqualTo("{\"old\":true}");
+        assertThat(error.get("new_schema").asText()).isEqualTo("{\"new\":true}");
     }
 
     @Test
     void multipleSchemaIncompatibilitiesReturnsAllErrors() throws Exception {
         HttpExchange exchange = mockExchange("POST", "{\"tables\":[\"public.users\",\"public.orders\"]}");
         setupSchemaReaderAndConverterForTables();
-        doThrow(new SchemaIncompatibilityException("incompatible schema for users", new Exception()))
+        doThrow(new SchemaIncompatibilityException("incompatible schema for users", new Exception(),
+                "{\"old\":\"users\"}", "{\"new\":\"users\"}"))
                 .when(publisher).register(eq("public.users"), any(), any());
-        doThrow(new SchemaIncompatibilityException("incompatible schema for orders", new Exception()))
+        doThrow(new SchemaIncompatibilityException("incompatible schema for orders", new Exception(),
+                "{\"old\":\"orders\"}", "{\"new\":\"orders\"}"))
                 .when(publisher).register(eq("public.orders"), any(), any());
 
         handler.handle(exchange);
@@ -133,8 +139,10 @@ class RegisterSchemasHandlerTest {
         JsonNode response = objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
         JsonNode errors = response.get("error").get("errors");
         assertThat(errors).hasSize(2);
-        assertThat(errors.get(0).asText()).contains("incompatible schema for users");
-        assertThat(errors.get(1).asText()).contains("incompatible schema for orders");
+        assertThat(errors.get(0).get("message").asText()).contains("incompatible schema for users");
+        assertThat(errors.get(0).get("old_schema").asText()).isEqualTo("{\"old\":\"users\"}");
+        assertThat(errors.get(1).get("message").asText()).contains("incompatible schema for orders");
+        assertThat(errors.get(1).get("old_schema").asText()).isEqualTo("{\"old\":\"orders\"}");
     }
 
     @Test

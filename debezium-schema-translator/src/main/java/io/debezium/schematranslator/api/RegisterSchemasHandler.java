@@ -84,7 +84,7 @@ public class RegisterSchemasHandler implements HttpHandler {
 
         // Register each schema with Schema Registry
         List<RegisteredSchema> results = new ArrayList<>();
-        List<String> incompatibilityErrors = new ArrayList<>();
+        List<ErrorResponse.SchemaError> incompatibilityErrors = new ArrayList<>();
         int tableIndex = 0;
         for (Map.Entry<TableId, TableSchema> entry : tableSchemas.entrySet()) {
             TableId tableId = entry.getKey();
@@ -112,7 +112,7 @@ public class RegisterSchemasHandler implements HttpHandler {
             }
             catch (SchemaIncompatibilityException e) {
                 LOGGER.warn("Schema incompatibility for table '{}': {}", originalTableName, e.getMessage());
-                incompatibilityErrors.add(e.getMessage());
+                incompatibilityErrors.add(new ErrorResponse.SchemaError(e.getMessage(), e.getOldSchema(), e.getNewSchema()));
             }
             catch (IOException e) {
                 LOGGER.error("Failed to register schema for table '{}'", originalTableName, e);
