@@ -141,8 +141,10 @@ class RegisterSchemasHandlerTest {
         assertThat(errors).hasSize(2);
         assertThat(errors.get(0).get("message").asText()).contains("incompatible schema for users");
         assertThat(errors.get(0).get("old_schema").asText()).isEqualTo("{\"old\":\"users\"}");
+        assertThat(errors.get(0).get("new_schema").asText()).isEqualTo("{\"new\":\"users\"}");
         assertThat(errors.get(1).get("message").asText()).contains("incompatible schema for orders");
         assertThat(errors.get(1).get("old_schema").asText()).isEqualTo("{\"old\":\"orders\"}");
+        assertThat(errors.get(1).get("new_schema").asText()).isEqualTo("{\"new\":\"orders\"}");
     }
 
     @Test
