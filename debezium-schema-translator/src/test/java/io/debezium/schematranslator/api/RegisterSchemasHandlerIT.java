@@ -161,8 +161,13 @@ class RegisterSchemasHandlerIT {
         com.fasterxml.jackson.databind.JsonNode errorJson = new com.fasterxml.jackson.databind.ObjectMapper().readTree(errorBody);
         assertThat(errorJson.get("error").get("message").asText())
                 .isEqualTo("One or more schemas are incompatible with an existing version");
-        assertThat(errorJson.get("error").get("errors").get(0).asText())
+        com.fasterxml.jackson.databind.JsonNode firstError = errorJson.get("error").get("errors").get(0);
+        assertThat(firstError.get("message").asText())
                 .contains("Schema for table public.evolution_bad is incompatible with an earlier schema for subject");
+        String oldSchema = firstError.get("old_schema").asText();
+        String newSchema = firstError.get("new_schema").asText();
+        assertThat(oldSchema).contains("evolution_bad").doesNotContain("required_flag");
+        assertThat(newSchema).contains("evolution_bad").contains("required_flag");
     }
 
     private static Configuration buildConfig() {

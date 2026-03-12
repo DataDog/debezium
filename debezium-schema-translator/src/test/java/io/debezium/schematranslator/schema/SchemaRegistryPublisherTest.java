@@ -45,13 +45,40 @@ class SchemaRegistryPublisherTest {
         try (var mock = mockConstruction(CachedSchemaRegistryClient.class, (client, ctx) -> {
             when(client.register(any(), any(ParsedSchema.class)))
                     .thenThrow(new RestClientException("Schema being registered is incompatible", 409, 409));
+            when(client.getLatestSchemaMetadata(any()))
+                    .thenReturn(new SchemaMetadata(1, 1, "\"string\""));
         })) {
             SchemaRegistryPublisher publisher = new SchemaRegistryPublisher("http://localhost:8081");
 
             assertThatThrownBy(() -> publisher.register("public.users", "test.public.users-value", AVRO_SCHEMA))
                     .isInstanceOf(SchemaIncompatibilityException.class)
                     .hasMessageContaining("public.users")
-                    .hasMessageContaining("test.public.users-value");
+                    .hasMessageContaining("test.public.users-value")
+                    .satisfies(ex -> {
+                        SchemaIncompatibilityException sie = (SchemaIncompatibilityException) ex;
+                        assertThat(sie.getOldSchema()).isEqualTo("\"string\"");
+                        assertThat(sie.getNewSchema()).isEqualTo(AVRO_SCHEMA.toString());
+                    });
+        }
+    }
+
+    @Test
+    void register409WithFetchFailureIncludesReasonInMessage() throws Exception {
+        try (var mock = mockConstruction(CachedSchemaRegistryClient.class, (client, ctx) -> {
+            when(client.register(any(), any(ParsedSchema.class)))
+                    .thenThrow(new RestClientException("Schema being registered is incompatible", 409, 409));
+            when(client.getLatestSchemaMetadata(any()))
+                    .thenThrow(new IOException("connection refused"));
+        })) {
+            SchemaRegistryPublisher publisher = new SchemaRegistryPublisher("http://localhost:8081");
+
+            assertThatThrownBy(() -> publisher.register("public.users", "test.public.users-value", AVRO_SCHEMA))
+                    .isInstanceOf(SchemaIncompatibilityException.class)
+                    .satisfies(ex -> {
+                        SchemaIncompatibilityException sie = (SchemaIncompatibilityException) ex;
+                        assertThat(sie.getOldSchema()).isEqualTo("could not retrieve existing schema: connection refused");
+                        assertThat(sie.getNewSchema()).isEqualTo(AVRO_SCHEMA.toString());
+                    });
         }
     }
 
