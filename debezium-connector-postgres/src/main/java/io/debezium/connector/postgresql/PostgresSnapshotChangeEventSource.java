@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -257,6 +258,11 @@ public class PostgresSnapshotChangeEventSource extends RelationalSnapshotChangeE
      * @param tableId the table to generate a query for
      * @return a valid query string
      */
+    @Override
+    protected OptionalLong rowCountForTable(TableId tableId) {
+        return PostgresIncrementalSnapshotHelper.estimateRowCount(jdbcConnection, tableId);
+    }
+
     @Override
     protected Optional<String> getSnapshotSelect(RelationalSnapshotContext<PostgresPartition, PostgresOffsetContext> snapshotContext,
                                                  TableId tableId, List<String> columns) {
