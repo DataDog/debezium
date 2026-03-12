@@ -63,6 +63,27 @@ class SchemaRegistryPublisherTest {
     }
 
     @Test
+    void register409WithFetchFailureIncludesReasonInMessage() throws Exception {
+        try (var mock = mockConstruction(CachedSchemaRegistryClient.class, (client, ctx) -> {
+            when(client.register(any(), any(ParsedSchema.class)))
+                    .thenThrow(new RestClientException("Schema being registered is incompatible", 409, 409));
+            when(client.getLatestSchemaMetadata(any()))
+                    .thenThrow(new IOException("connection refused"));
+        })) {
+            SchemaRegistryPublisher publisher = new SchemaRegistryPublisher("http://localhost:8081");
+
+            assertThatThrownBy(() -> publisher.register("public.users", "test.public.users-value", AVRO_SCHEMA))
+                    .isInstanceOf(SchemaIncompatibilityException.class)
+                    .hasMessageContaining("could not retrieve existing schema: connection refused")
+                    .satisfies(ex -> {
+                        SchemaIncompatibilityException sie = (SchemaIncompatibilityException) ex;
+                        assertThat(sie.getOldSchema()).isNull();
+                        assertThat(sie.getNewSchema()).isEqualTo(AVRO_SCHEMA.toString());
+                    });
+        }
+    }
+
+    @Test
     void registerNon409RestClientExceptionThrowsIOException() throws Exception {
         try (var mock = mockConstruction(CachedSchemaRegistryClient.class, (client, ctx) -> {
             when(client.register(any(), any(ParsedSchema.class)))
