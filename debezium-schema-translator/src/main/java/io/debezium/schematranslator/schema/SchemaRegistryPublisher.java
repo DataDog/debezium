@@ -94,6 +94,8 @@ public class SchemaRegistryPublisher {
      */
     public RegisteredSchema deleteSubject(String subject, String topicPrefix) throws IOException {
         try {
+            // Capture metadata before deletion — getLatestSchemaMetadata must precede deleteSubject
+            // intentionally, as it would throw 404 afterwards.
             SchemaMetadata metadata = client.getLatestSchemaMetadata(subject);
             int schemaId = metadata.getId();
             int version = metadata.getVersion();
