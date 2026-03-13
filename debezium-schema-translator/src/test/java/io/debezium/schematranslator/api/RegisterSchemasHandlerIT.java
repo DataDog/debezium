@@ -17,6 +17,10 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.URL;
@@ -172,12 +176,12 @@ class RegisterSchemasHandlerIT {
 
         HttpURLConnection conn2 = post("{\"tables\":[\"public.evolution_bad\"]}");
         assertThat(conn2.getResponseCode()).isEqualTo(409);
-        java.io.InputStream errStream = conn2.getErrorStream();
+        InputStream errStream = conn2.getErrorStream();
         String errorBody = errStream != null ? new String(errStream.readAllBytes(), StandardCharsets.UTF_8) : "";
-        com.fasterxml.jackson.databind.JsonNode errorJson = new com.fasterxml.jackson.databind.ObjectMapper().readTree(errorBody);
+        JsonNode errorJson = new ObjectMapper().readTree(errorBody);
         assertThat(errorJson.get("error").get("message").asText())
                 .isEqualTo("One or more schemas are incompatible with an existing version");
-        com.fasterxml.jackson.databind.JsonNode firstError = errorJson.get("error").get("errors").get(0);
+        JsonNode firstError = errorJson.get("error").get("errors").get(0);
         assertThat(firstError.get("message").asText())
                 .contains("Schema for table public.evolution_bad is incompatible with an earlier schema for subject");
         String oldSchema = firstError.get("old_schema").asText();
@@ -201,14 +205,13 @@ class RegisterSchemasHandlerIT {
         String body = new String(deleteConn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
 
         assertThat(deleteConn.getResponseCode()).isEqualTo(200);
-        com.fasterxml.jackson.databind.JsonNode json =
-                new com.fasterxml.jackson.databind.ObjectMapper().readTree(body);
+        JsonNode json = new ObjectMapper().readTree(body);
         int deletedCount = json.get("deleted_count").asInt();
         assertThat(deletedCount).isEqualTo(2);
         assertThat(json.get("deleted_schemas")).hasSize(deletedCount);
         // Verify table name, schema_id, and version for the registered subjects
-        com.fasterxml.jackson.databind.JsonNode deletedSchemas = json.get("deleted_schemas");
-        for (com.fasterxml.jackson.databind.JsonNode schema : deletedSchemas) {
+        JsonNode deletedSchemas = json.get("deleted_schemas");
+        for (JsonNode schema : deletedSchemas) {
             String subject = schema.get("subject").asText();
             if (subject.equals("test.public.delete_test-value") || subject.equals("test.public.delete_test-key")) {
                 assertThat(schema.get("table").asText()).isEqualTo("public.delete_test");
@@ -220,8 +223,7 @@ class RegisterSchemasHandlerIT {
         // Verify the registry is actually empty now
         HttpURLConnection deleteAgain = delete();
         String emptyBody = new String(deleteAgain.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        com.fasterxml.jackson.databind.JsonNode emptyJson =
-                new com.fasterxml.jackson.databind.ObjectMapper().readTree(emptyBody);
+        JsonNode emptyJson = new ObjectMapper().readTree(emptyBody);
         assertThat(deleteAgain.getResponseCode()).isEqualTo(200);
         assertThat(emptyJson.get("deleted_count").asInt()).isEqualTo(0);
     }
