@@ -75,6 +75,11 @@ class RegisterSchemasHandlerIT {
         reader = new DebeziumSchemaReader(buildConfig());
         String srUrl = "http://localhost:" + schemaRegistry.getMappedPort(8081);
         SchemaRegistryPublisher publisher = new SchemaRegistryPublisher(srUrl);
+
+        // Ensure the registry is clean before each test
+        for (String subject : publisher.getAllSubjects()) {
+            publisher.deleteSubject(subject, "test");
+        }
         RegisterSchemasHandler registerHandler = new RegisterSchemasHandler(reader, new AvroSchemaConverter(), publisher);
         DeleteSchemasHandler deleteHandler = new DeleteSchemasHandler(publisher, "test");
 
@@ -199,7 +204,7 @@ class RegisterSchemasHandlerIT {
         com.fasterxml.jackson.databind.JsonNode json =
                 new com.fasterxml.jackson.databind.ObjectMapper().readTree(body);
         int deletedCount = json.get("deleted_count").asInt();
-        assertThat(deletedCount).isGreaterThanOrEqualTo(2);
+        assertThat(deletedCount).isEqualTo(2);
         assertThat(json.get("deleted_schemas")).hasSize(deletedCount);
         // Verify table name, schema_id, and version for the registered subjects
         com.fasterxml.jackson.databind.JsonNode deletedSchemas = json.get("deleted_schemas");
