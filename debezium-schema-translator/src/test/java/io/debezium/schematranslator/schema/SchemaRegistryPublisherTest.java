@@ -10,6 +10,7 @@ import org.apache.avro.Schema;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -93,6 +94,64 @@ class SchemaRegistryPublisherTest {
             assertThatThrownBy(() -> publisher.register("public.users", "test.public.users-value", AVRO_SCHEMA))
                     .isInstanceOf(IOException.class)
                     .hasMessageContaining("HTTP 500");
+        }
+    }
+
+    @Test
+    void getAllSubjectsReturnsSubjectList() throws Exception {
+        try (var mock = mockConstruction(CachedSchemaRegistryClient.class, (client, ctx) -> {
+            when(client.getAllSubjects()).thenReturn(List.of("test.public.users-value", "test.public.users-key"));
+        })) {
+            SchemaRegistryPublisher publisher = new SchemaRegistryPublisher("http://localhost:8081");
+
+            List<String> subjects = publisher.getAllSubjects();
+
+            assertThat(subjects).containsExactlyInAnyOrder("test.public.users-value", "test.public.users-key");
+        }
+    }
+
+    @Test
+    void getAllSubjectsWrapsRestClientExceptionIntoIOException() throws Exception {
+        try (var mock = mockConstruction(CachedSchemaRegistryClient.class, (client, ctx) -> {
+            when(client.getAllSubjects()).thenThrow(new RestClientException("Unauthorized", 401, 40101));
+        })) {
+            SchemaRegistryPublisher publisher = new SchemaRegistryPublisher("http://localhost:8081");
+
+            assertThatThrownBy(() -> publisher.getAllSubjects())
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("HTTP 401");
+        }
+    }
+
+    @Test
+    void deleteSubjectReturnsCorrectRegisteredSchema() throws Exception {
+        try (var mock = mockConstruction(CachedSchemaRegistryClient.class, (client, ctx) -> {
+            when(client.getLatestSchemaMetadata("test.public.users-value"))
+                    .thenReturn(new SchemaMetadata(42, 3, "{}"));
+            when(client.deleteSubject("test.public.users-value")).thenReturn(List.of(1, 2, 3));
+        })) {
+            SchemaRegistryPublisher publisher = new SchemaRegistryPublisher("http://localhost:8081");
+
+            RegisteredSchema result = publisher.deleteSubject("test.public.users-value", "test");
+
+            assertThat(result.getTable()).isEqualTo("public.users");
+            assertThat(result.getSubject()).isEqualTo("test.public.users-value");
+            assertThat(result.getSchemaId()).isEqualTo(42);
+            assertThat(result.getVersion()).isEqualTo(3);
+        }
+    }
+
+    @Test
+    void deleteSubjectWrapsRestClientExceptionIntoIOException() throws Exception {
+        try (var mock = mockConstruction(CachedSchemaRegistryClient.class, (client, ctx) -> {
+            when(client.getLatestSchemaMetadata(any()))
+                    .thenThrow(new RestClientException("Subject not found", 404, 40401));
+        })) {
+            SchemaRegistryPublisher publisher = new SchemaRegistryPublisher("http://localhost:8081");
+
+            assertThatThrownBy(() -> publisher.deleteSubject("test.public.users-value", "test"))
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("HTTP 404");
         }
     }
 }

@@ -75,10 +75,21 @@ class RegisterSchemasHandlerIT {
         reader = new DebeziumSchemaReader(buildConfig());
         String srUrl = "http://localhost:" + schemaRegistry.getMappedPort(8081);
         SchemaRegistryPublisher publisher = new SchemaRegistryPublisher(srUrl);
-        RegisterSchemasHandler handler = new RegisterSchemasHandler(reader, new AvroSchemaConverter(), publisher);
+        RegisterSchemasHandler registerHandler = new RegisterSchemasHandler(reader, new AvroSchemaConverter(), publisher);
+        DeleteSchemasHandler deleteHandler = new DeleteSchemasHandler(publisher, "test");
 
         handlerServer = HttpServer.create(new InetSocketAddress(0), 0);
-        handlerServer.createContext("/api/v1/schema-translator/schemas", handler);
+        handlerServer.createContext("/api/v1/schema-translator/schemas", exchange -> {
+            String method = exchange.getRequestMethod();
+            if ("POST".equalsIgnoreCase(method)) {
+                registerHandler.handle(exchange);
+            } else if ("DELETE".equalsIgnoreCase(method)) {
+                deleteHandler.handle(exchange);
+            } else {
+                exchange.sendResponseHeaders(405, -1);
+                exchange.getResponseBody().close();
+            }
+        });
         handlerServer.start();
         handlerPort = handlerServer.getAddress().getPort();
     }
@@ -170,6 +181,46 @@ class RegisterSchemasHandlerIT {
         assertThat(newSchema).contains("evolution_bad").contains("required_flag");
     }
 
+    @Test
+    void deleteAllSchemasReturns200WithDeletedSchemas() throws Exception {
+        execute("CREATE TABLE IF NOT EXISTS public.delete_test (" +
+                "  id SERIAL PRIMARY KEY," +
+                "  label TEXT NOT NULL" +
+                ")");
+
+        HttpURLConnection postConn = post("{\"tables\":[\"public.delete_test\"]}");
+        assertThat(postConn.getResponseCode()).isEqualTo(200);
+        postConn.getInputStream().readAllBytes(); // drain
+
+        HttpURLConnection deleteConn = delete();
+        String body = new String(deleteConn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+
+        assertThat(deleteConn.getResponseCode()).isEqualTo(200);
+        com.fasterxml.jackson.databind.JsonNode json =
+                new com.fasterxml.jackson.databind.ObjectMapper().readTree(body);
+        int deletedCount = json.get("deleted_count").asInt();
+        assertThat(deletedCount).isGreaterThanOrEqualTo(2);
+        assertThat(json.get("deleted_schemas")).hasSize(deletedCount);
+        // Verify table name, schema_id, and version for the registered subjects
+        com.fasterxml.jackson.databind.JsonNode deletedSchemas = json.get("deleted_schemas");
+        for (com.fasterxml.jackson.databind.JsonNode schema : deletedSchemas) {
+            String subject = schema.get("subject").asText();
+            if (subject.equals("test.public.delete_test-value") || subject.equals("test.public.delete_test-key")) {
+                assertThat(schema.get("table").asText()).isEqualTo("public.delete_test");
+                assertThat(schema.get("schema_id").asInt()).isGreaterThan(0);
+                assertThat(schema.get("version").asInt()).isEqualTo(1);
+            }
+        }
+
+        // Verify the registry is actually empty now
+        HttpURLConnection deleteAgain = delete();
+        String emptyBody = new String(deleteAgain.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        com.fasterxml.jackson.databind.JsonNode emptyJson =
+                new com.fasterxml.jackson.databind.ObjectMapper().readTree(emptyBody);
+        assertThat(deleteAgain.getResponseCode()).isEqualTo(200);
+        assertThat(emptyJson.get("deleted_count").asInt()).isEqualTo(0);
+    }
+
     private static Configuration buildConfig() {
         Properties props = new Properties();
         props.put("database.hostname", postgres.getHost());
@@ -195,6 +246,14 @@ class RegisterSchemasHandlerIT {
         byte[] bytes = jsonBody.getBytes(StandardCharsets.UTF_8);
         conn.getOutputStream().write(bytes);
         conn.getOutputStream().flush();
+        return conn;
+    }
+
+    private HttpURLConnection delete() throws Exception {
+        URL url = new URL("http://localhost:" + handlerPort
+                + "/api/v1/schema-translator/schemas");
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("DELETE");
         return conn;
     }
 

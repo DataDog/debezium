@@ -11,7 +11,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 
 /**
  * Registers Avro schemas with the Confluent Schema Registry.
@@ -65,6 +67,61 @@ public class SchemaRegistryPublisher {
             }
             throw new IOException("Schema Registry error (HTTP " + e.getStatus() + "): " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Returns all subject names currently registered in the Schema Registry.
+     *
+     * @return list of subject names
+     * @throws IOException if a network or infrastructure error occurs
+     */
+    public List<String> getAllSubjects() throws IOException {
+        try {
+            return new ArrayList<>(client.getAllSubjects());
+        }
+        catch (RestClientException e) {
+            throw new IOException("Schema Registry error (HTTP " + e.getStatus() + "): " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Deletes all versions of the given subject from the Schema Registry.
+     *
+     * @param subject     the SR subject to delete
+     * @param topicPrefix the topic prefix used to derive the table name
+     * @return a {@link RegisteredSchema} describing the deleted subject
+     * @throws IOException if a network or infrastructure error occurs
+     */
+    public RegisteredSchema deleteSubject(String subject, String topicPrefix) throws IOException {
+        try {
+            SchemaMetadata metadata = client.getLatestSchemaMetadata(subject);
+            int schemaId = metadata.getId();
+            int version = metadata.getVersion();
+            client.deleteSubject(subject);
+            String table = deriveTableName(subject, topicPrefix);
+            LOGGER.info("Deleted subject '{}' (table '{}', schema_id={}, version={})",
+                    subject, table, schemaId, version);
+            return new RegisteredSchema(table, subject, schemaId, version);
+        }
+        catch (RestClientException e) {
+            throw new IOException("Schema Registry error (HTTP " + e.getStatus() + "): " + e.getMessage(), e);
+        }
+    }
+
+    private static String deriveTableName(String subject, String topicPrefix) {
+        String table = subject;
+        if (topicPrefix != null && !topicPrefix.isEmpty()) {
+            String prefix = topicPrefix + ".";
+            if (table.startsWith(prefix)) {
+                table = table.substring(prefix.length());
+            }
+        }
+        if (table.endsWith("-value")) {
+            table = table.substring(0, table.length() - "-value".length());
+        } else if (table.endsWith("-key")) {
+            table = table.substring(0, table.length() - "-key".length());
+        }
+        return table;
     }
 
     /**
