@@ -17,6 +17,10 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.URL;
@@ -75,10 +79,26 @@ class RegisterSchemasHandlerIT {
         reader = new DebeziumSchemaReader(buildConfig());
         String srUrl = "http://localhost:" + schemaRegistry.getMappedPort(8081);
         SchemaRegistryPublisher publisher = new SchemaRegistryPublisher(srUrl);
-        RegisterSchemasHandler handler = new RegisterSchemasHandler(reader, new AvroSchemaConverter(), publisher);
+
+        // Ensure the registry is clean before each test
+        for (String subject : publisher.getAllSubjects()) {
+            publisher.deleteSubject(subject, "test");
+        }
+        RegisterSchemasHandler registerHandler = new RegisterSchemasHandler(reader, new AvroSchemaConverter(), publisher);
+        DeleteSchemasHandler deleteHandler = new DeleteSchemasHandler(publisher, "test");
 
         handlerServer = HttpServer.create(new InetSocketAddress(0), 0);
-        handlerServer.createContext("/api/v1/schema-translator/schemas", handler);
+        handlerServer.createContext("/api/v1/schema-translator/schemas", exchange -> {
+            String method = exchange.getRequestMethod();
+            if ("POST".equalsIgnoreCase(method)) {
+                registerHandler.handle(exchange);
+            } else if ("DELETE".equalsIgnoreCase(method)) {
+                deleteHandler.handle(exchange);
+            } else {
+                exchange.sendResponseHeaders(405, -1);
+                exchange.getResponseBody().close();
+            }
+        });
         handlerServer.start();
         handlerPort = handlerServer.getAddress().getPort();
     }
@@ -156,18 +176,56 @@ class RegisterSchemasHandlerIT {
 
         HttpURLConnection conn2 = post("{\"tables\":[\"public.evolution_bad\"]}");
         assertThat(conn2.getResponseCode()).isEqualTo(409);
-        java.io.InputStream errStream = conn2.getErrorStream();
+        InputStream errStream = conn2.getErrorStream();
         String errorBody = errStream != null ? new String(errStream.readAllBytes(), StandardCharsets.UTF_8) : "";
-        com.fasterxml.jackson.databind.JsonNode errorJson = new com.fasterxml.jackson.databind.ObjectMapper().readTree(errorBody);
+        JsonNode errorJson = new ObjectMapper().readTree(errorBody);
         assertThat(errorJson.get("error").get("message").asText())
                 .isEqualTo("One or more schemas are incompatible with an existing version");
-        com.fasterxml.jackson.databind.JsonNode firstError = errorJson.get("error").get("errors").get(0);
+        JsonNode firstError = errorJson.get("error").get("errors").get(0);
         assertThat(firstError.get("message").asText())
                 .contains("Schema for table public.evolution_bad is incompatible with an earlier schema for subject");
         String oldSchema = firstError.get("old_schema").asText();
         String newSchema = firstError.get("new_schema").asText();
         assertThat(oldSchema).contains("evolution_bad").doesNotContain("required_flag");
         assertThat(newSchema).contains("evolution_bad").contains("required_flag");
+    }
+
+    @Test
+    void deleteAllSchemasReturns200WithDeletedSchemas() throws Exception {
+        execute("CREATE TABLE IF NOT EXISTS public.delete_test (" +
+                "  id SERIAL PRIMARY KEY," +
+                "  label TEXT NOT NULL" +
+                ")");
+
+        HttpURLConnection postConn = post("{\"tables\":[\"public.delete_test\"]}");
+        assertThat(postConn.getResponseCode()).isEqualTo(200);
+        postConn.getInputStream().readAllBytes(); // drain
+
+        HttpURLConnection deleteConn = delete();
+        String body = new String(deleteConn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+
+        assertThat(deleteConn.getResponseCode()).isEqualTo(200);
+        JsonNode json = new ObjectMapper().readTree(body);
+        int deletedCount = json.get("deleted_count").asInt();
+        assertThat(deletedCount).isEqualTo(2);
+        assertThat(json.get("deleted_schemas")).hasSize(deletedCount);
+        // Verify table name, schema_id, and version for the registered subjects
+        JsonNode deletedSchemas = json.get("deleted_schemas");
+        for (JsonNode schema : deletedSchemas) {
+            String subject = schema.get("subject").asText();
+            if (subject.equals("test.public.delete_test-value") || subject.equals("test.public.delete_test-key")) {
+                assertThat(schema.get("table").asText()).isEqualTo("public.delete_test");
+                assertThat(schema.get("schema_id").asInt()).isGreaterThan(0);
+                assertThat(schema.get("version").asInt()).isEqualTo(1);
+            }
+        }
+
+        // Verify the registry is actually empty now
+        HttpURLConnection deleteAgain = delete();
+        String emptyBody = new String(deleteAgain.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        JsonNode emptyJson = new ObjectMapper().readTree(emptyBody);
+        assertThat(deleteAgain.getResponseCode()).isEqualTo(200);
+        assertThat(emptyJson.get("deleted_count").asInt()).isEqualTo(0);
     }
 
     private static Configuration buildConfig() {
@@ -195,6 +253,14 @@ class RegisterSchemasHandlerIT {
         byte[] bytes = jsonBody.getBytes(StandardCharsets.UTF_8);
         conn.getOutputStream().write(bytes);
         conn.getOutputStream().flush();
+        return conn;
+    }
+
+    private HttpURLConnection delete() throws Exception {
+        URL url = new URL("http://localhost:" + handlerPort
+                + "/api/v1/schema-translator/schemas");
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("DELETE");
         return conn;
     }
 
