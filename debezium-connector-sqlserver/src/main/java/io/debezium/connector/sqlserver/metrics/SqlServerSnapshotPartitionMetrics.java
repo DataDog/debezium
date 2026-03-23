@@ -116,6 +116,15 @@ class SqlServerSnapshotPartitionMetrics extends AbstractSqlServerPartitionMetric
         return snapshotMeter.getRowsScanned();
     }
 
+    void totalRowsToScan(TableId tableId, long estimatedRows) {
+        snapshotMeter.totalRowsToScan(tableId, estimatedRows);
+    }
+
+    @Override
+    public ConcurrentMap<String, Long> getTotalRowsToScan() {
+        return snapshotMeter.getTotalRowsToScan();
+    }
+
     void currentChunk(String chunkId, Object[] chunkFrom, Object[] chunkTo) {
         snapshotMeter.currentChunk(chunkId, chunkFrom, chunkTo);
     }

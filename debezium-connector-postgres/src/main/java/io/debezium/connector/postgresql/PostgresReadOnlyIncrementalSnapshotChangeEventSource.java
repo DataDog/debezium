@@ -6,6 +6,7 @@
 package io.debezium.connector.postgresql;
 
 import java.sql.SQLException;
+import java.util.OptionalLong;
 import java.util.function.Consumer;
 
 import org.slf4j.Logger;
@@ -166,6 +167,11 @@ public class PostgresReadOnlyIncrementalSnapshotChangeEventSource<P extends Post
         LOGGER.debug("Refreshing table '{}' schema for incremental snapshot.", table.id());
         schema.refreshFromIncrementalSnapshot(jdbcConnection, table.id());
         return schema.tableFor(table.id());
+    }
+
+    @Override
+    protected OptionalLong estimateRowCount(TableId tableId) {
+        return PostgresIncrementalSnapshotHelper.estimateRowCount(jdbcConnection, tableId);
     }
 
     private void readUntilNewTransactionChange(P partition, OffsetContext offsetContext) throws InterruptedException {

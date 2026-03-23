@@ -496,6 +496,7 @@ public abstract class RelationalSnapshotChangeEventSource<P extends Partition, O
 
                 final OptionalLong rowCount = rowCountForTable(tableId);
                 rowCountTables.put(tableId, rowCount);
+                rowCount.ifPresent(count -> snapshotProgressListener.totalRowsToScan(snapshotContext.partition, tableId, count));
             }
             else {
                 LOGGER.warn("For table '{}' the select statement was not provided, skipping table", tableId);
@@ -668,6 +669,7 @@ public abstract class RelationalSnapshotChangeEventSource<P extends Partition, O
             LOGGER.info("\t Finished exporting {} records for table '{}' ({} of {} tables); total duration '{}'",
                     rows, table.id(), tableOrder, tableCount, Strings.duration(clock.currentTimeInMillis() - exportStart));
             snapshotProgressListener.dataCollectionSnapshotCompleted(snapshotContext.partition, table.id(), rows);
+            snapshotProgressListener.totalRowsToScan(snapshotContext.partition, table.id(), rows);
             notificationService.initialSnapshotNotificationService().notifyCompletedTableSuccessfully(snapshotContext.partition,
                     snapshotContext.offset, table.id().identifier(), rows, snapshotContext.capturedTables);
         }

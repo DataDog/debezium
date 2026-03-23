@@ -6,6 +6,7 @@
 package io.debezium.connector.postgresql;
 
 import java.sql.SQLException;
+import java.util.OptionalLong;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -56,5 +57,10 @@ public class PostgresSignalBasedIncrementalSnapshotChangeEventSource
         LOGGER.debug("Refreshing table '{}' schema for incremental snapshot.", table.id());
         schema.refreshFromIncrementalSnapshot(jdbcConnection, table.id());
         return schema.tableFor(table.id());
+    }
+
+    @Override
+    protected OptionalLong estimateRowCount(TableId tableId) {
+        return PostgresIncrementalSnapshotHelper.estimateRowCount(jdbcConnection, tableId);
     }
 }

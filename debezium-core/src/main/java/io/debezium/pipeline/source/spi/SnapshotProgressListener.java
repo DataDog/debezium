@@ -34,6 +34,8 @@ public interface SnapshotProgressListener<P extends Partition> {
 
     void rowsScanned(P partition, TableId tableId, long numRows);
 
+    void totalRowsToScan(P partition, TableId tableId, long totalRows);
+
     void currentChunk(P partition, String chunkId, Object[] chunkFrom, Object[] chunkTo);
 
     void currentChunk(P partition, String chunkId, Object[] chunkFrom, Object[] chunkTo, Object[] tableTo);
@@ -55,6 +57,10 @@ public interface SnapshotProgressListener<P extends Partition> {
 
             @Override
             public void rowsScanned(P partition, TableId tableId, long numRows) {
+            }
+
+            @Override
+            public void totalRowsToScan(P partition, TableId tableId, long totalRows) {
             }
 
             @Override

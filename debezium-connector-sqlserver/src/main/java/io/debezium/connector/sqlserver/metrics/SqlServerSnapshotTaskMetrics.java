@@ -79,6 +79,11 @@ class SqlServerSnapshotTaskMetrics extends AbstractSqlServerTaskMetrics<SqlServe
     }
 
     @Override
+    public void totalRowsToScan(SqlServerPartition partition, TableId tableId, long totalRows) {
+        onPartitionEvent(partition, bean -> bean.totalRowsToScan(tableId, totalRows));
+    }
+
+    @Override
     public void currentChunk(SqlServerPartition partition, String chunkId, Object[] chunkFrom, Object[] chunkTo) {
         onPartitionEvent(partition, bean -> bean.currentChunk(chunkId, chunkFrom, chunkTo));
     }

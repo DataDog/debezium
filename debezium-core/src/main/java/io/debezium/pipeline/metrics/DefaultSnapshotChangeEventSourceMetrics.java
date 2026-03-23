@@ -141,6 +141,16 @@ public class DefaultSnapshotChangeEventSourceMetrics<P extends Partition> extend
     }
 
     @Override
+    public void totalRowsToScan(P partition, TableId tableId, long totalRows) {
+        snapshotMeter.totalRowsToScan(tableId, totalRows);
+    }
+
+    @Override
+    public ConcurrentMap<String, Long> getTotalRowsToScan() {
+        return snapshotMeter.getTotalRowsToScan();
+    }
+
+    @Override
     public void currentChunk(P partition, String chunkId, Object[] chunkFrom, Object[] chunkTo) {
         snapshotMeter.currentChunk(chunkId, chunkFrom, chunkTo);
     }
