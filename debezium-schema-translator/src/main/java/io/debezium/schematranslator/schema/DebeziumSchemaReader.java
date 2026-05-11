@@ -6,6 +6,7 @@ import io.debezium.connector.postgresql.PostgresValueConverter;
 import io.debezium.connector.postgresql.connection.PostgresConnection;
 import io.debezium.connector.postgresql.connection.PostgresConnection.PostgresValueConverterBuilder;
 import io.debezium.connector.postgresql.connection.PostgresDefaultValueConverter;
+import io.debezium.jdbc.JdbcConfiguration;
 import io.debezium.relational.CustomConverterRegistry;
 import io.debezium.relational.Table;
 import io.debezium.relational.TableId;
@@ -32,24 +33,26 @@ import java.util.Set;
  * Mirrors the initialization from {@code PostgresConnectorTask.start()} but strips out
  * everything CDC-related — no replication slots, no streaming, no snapshotter.
  * <p>
- * The Postgres connection is opened on every {@link #readSchemas} call and closed
- * before returning, so each request can target a different database.
+ * The connector-level configuration is built once at construction; the JDBC connection
+ * is parsed from a {@code postgresql://...} URL and opened fresh on every
+ * {@link #readSchemas} call, so each request can target a different database.
  */
 public class DebeziumSchemaReader {
 
     private static final String DEFAULT_SSL_MODE = "prefer";
     private static final int DEFAULT_PG_PORT = 5432;
 
-    private final String topicPrefix;
+    private final PostgresConnectorConfig connectorConfig;
     private final TopicNamingStrategy<TableId> topicNamingStrategy;
+    private final SchemaNameAdjuster schemaNameAdjuster;
+    private final Schema sourceInfoSchema;
 
     @SuppressWarnings("unchecked")
     public DebeziumSchemaReader(String topicPrefix) {
-        this.topicPrefix = topicPrefix;
-        // The topic naming strategy depends only on the topic prefix, so build it once here
-        // from a config that has no Postgres connection details.
-        PostgresConnectorConfig baseConfig = new PostgresConnectorConfig(baseConfig(topicPrefix));
-        this.topicNamingStrategy = baseConfig.getTopicNamingStrategy(PostgresConnectorConfig.TOPIC_NAMING_STRATEGY);
+        this.connectorConfig = new PostgresConnectorConfig(staticConfig(topicPrefix));
+        this.topicNamingStrategy = connectorConfig.getTopicNamingStrategy(PostgresConnectorConfig.TOPIC_NAMING_STRATEGY);
+        this.schemaNameAdjuster = connectorConfig.schemaNameAdjuster();
+        this.sourceInfoSchema = connectorConfig.getSourceInfoStructMaker().schema();
     }
 
     /**
@@ -62,23 +65,7 @@ public class DebeziumSchemaReader {
      * @throws RuntimeException if a table is not found or a database error occurs
      */
     public Map<TableId, TableSchema> readSchemas(String connectionString, List<String> tableNames) throws SQLException {
-        // PostgresConnectorConfig construction reflectively loads classes (e.g. PostgresSourceInfoStructMaker)
-        // via the thread's context classloader. HTTP server worker threads inherit a classloader that doesn't
-        // see those classes, so we pin the loader to this class's for the duration of the call.
-        Thread current = Thread.currentThread();
-        ClassLoader previousLoader = current.getContextClassLoader();
-        current.setContextClassLoader(DebeziumSchemaReader.class.getClassLoader());
-        try {
-            return doReadSchemas(connectionString, tableNames);
-        }
-        finally {
-            current.setContextClassLoader(previousLoader);
-        }
-    }
-
-    private Map<TableId, TableSchema> doReadSchemas(String connectionString, List<String> tableNames) throws SQLException {
-        Configuration config = buildConfig(connectionString, topicPrefix);
-        PostgresConnectorConfig connectorConfig = new PostgresConnectorConfig(config);
+        JdbcConfiguration jdbcConfig = parseJdbcConfig(connectionString);
 
         List<TableId> requestedIds = tableNames.stream()
                 .map(DebeziumSchemaReader::parseTableId)
@@ -86,27 +73,20 @@ public class DebeziumSchemaReader {
         Set<TableId> requestedSet = Set.copyOf(requestedIds);
         Tables.TableFilter filter = Tables.TableFilter.fromPredicate(requestedSet::contains);
 
-        final SchemaNameAdjuster schemaNameAdjuster = connectorConfig.schemaNameAdjuster();
-
-        final Charset databaseCharset;
-        try (PostgresConnection temp = new PostgresConnection(
-                connectorConfig.getJdbcConfig(), PostgresConnection.CONNECTION_GENERAL)) {
+        Charset databaseCharset;
+        try (PostgresConnection temp = new PostgresConnection(jdbcConfig, PostgresConnection.CONNECTION_GENERAL)) {
             databaseCharset = temp.getDatabaseCharset();
         }
 
-        final PostgresValueConverterBuilder vcBuilder = (typeRegistry) -> PostgresValueConverter.of(
+        PostgresValueConverterBuilder vcBuilder = (typeRegistry) -> PostgresValueConverter.of(
                 connectorConfig, databaseCharset, typeRegistry);
 
-        try (PostgresConnection connection = new PostgresConnection(
-                connectorConfig.getJdbcConfig(), vcBuilder, PostgresConnection.CONNECTION_GENERAL)) {
-
-            final PostgresDefaultValueConverter defaultValueConverter = connection.getDefaultValueConverter();
-            final PostgresValueConverter valueConverter = vcBuilder.build(connection.getTypeRegistry());
-            final Schema sourceInfoSchema = connectorConfig.getSourceInfoStructMaker().schema();
-            final CustomConverterRegistry customConverterRegistry = new CustomConverterRegistry(null);
+        try (PostgresConnection connection = new PostgresConnection(jdbcConfig, vcBuilder, PostgresConnection.CONNECTION_GENERAL)) {
+            PostgresDefaultValueConverter defaultValueConverter = connection.getDefaultValueConverter();
+            PostgresValueConverter valueConverter = vcBuilder.build(connection.getTypeRegistry());
             TableSchemaBuilder tableSchemaBuilder = new TableSchemaBuilder(
                     valueConverter, defaultValueConverter, schemaNameAdjuster,
-                    customConverterRegistry, sourceInfoSchema,
+                    new CustomConverterRegistry(null), sourceInfoSchema,
                     connectorConfig.getFieldNamer(), false);
 
             Tables tables = new Tables();
@@ -128,10 +108,9 @@ public class DebeziumSchemaReader {
 
     /**
      * Parses a Postgres connection URL ({@code postgresql://user:pass@host:port/dbname[?sslmode=...]})
-     * and produces a Debezium {@link Configuration} suitable for instantiating a
-     * {@link PostgresConnectorConfig}.
+     * into a {@link JdbcConfiguration} suitable for opening a {@link PostgresConnection}.
      */
-    static Configuration buildConfig(String connectionString, String topicPrefix) {
+    static JdbcConfiguration parseJdbcConfig(String connectionString) {
         if (connectionString == null || connectionString.isBlank()) {
             throw new IllegalArgumentException("connection_string must not be empty");
         }
@@ -187,17 +166,21 @@ public class DebeziumSchemaReader {
             }
         }
 
-        return baseConfig(topicPrefix).edit()
-                .with("database.hostname", host)
-                .with("database.port", port)
-                .with("database.dbname", database)
-                .with("database.user", user)
-                .with("database.password", password)
-                .with("database.sslmode", sslMode)
+        return JdbcConfiguration.create()
+                .withHostname(host)
+                .withPort(port)
+                .withDatabase(database)
+                .withUser(user)
+                .withPassword(password)
+                .with("sslmode", sslMode)
                 .build();
     }
 
-    private static Configuration baseConfig(String topicPrefix) {
+    /**
+     * Builds the static, connector-level configuration. Connection details are not part of
+     * this config — they come per-request via {@link #parseJdbcConfig(String)}.
+     */
+    private static Configuration staticConfig(String topicPrefix) {
         return Configuration.create()
                 .with("topic.prefix", topicPrefix)
                 // Required for Avro-compatible schema names

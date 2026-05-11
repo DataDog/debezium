@@ -1,6 +1,6 @@
 package io.debezium.schematranslator.schema;
 
-import io.debezium.config.Configuration;
+import io.debezium.jdbc.JdbcConfiguration;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -9,101 +9,95 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class DebeziumSchemaReaderTest {
 
     @Test
-    void buildConfigParsesFullUrl() {
-        Configuration config = DebeziumSchemaReader.buildConfig(
-                "postgresql://alice:secret@pg.example.com:6543/llm_obs?sslmode=require",
-                "topicPrefix");
+    void parseJdbcConfigParsesFullUrl() {
+        JdbcConfiguration jdbc = DebeziumSchemaReader.parseJdbcConfig(
+                "postgresql://alice:secret@pg.example.com:6543/llm_obs?sslmode=require");
 
-        assertThat(config.getString("database.hostname")).isEqualTo("pg.example.com");
-        assertThat(config.getString("database.port")).isEqualTo("6543");
-        assertThat(config.getString("database.dbname")).isEqualTo("llm_obs");
-        assertThat(config.getString("database.user")).isEqualTo("alice");
-        assertThat(config.getString("database.password")).isEqualTo("secret");
-        assertThat(config.getString("database.sslmode")).isEqualTo("require");
-        assertThat(config.getString("topic.prefix")).isEqualTo("topicPrefix");
+        assertThat(jdbc.getHostname()).isEqualTo("pg.example.com");
+        assertThat(jdbc.getPort()).isEqualTo(6543);
+        assertThat(jdbc.getDatabase()).isEqualTo("llm_obs");
+        assertThat(jdbc.getUser()).isEqualTo("alice");
+        assertThat(jdbc.getPassword()).isEqualTo("secret");
+        assertThat(jdbc.getString("sslmode")).isEqualTo("require");
     }
 
     @Test
-    void buildConfigDefaultsPortAndSslMode() {
-        Configuration config = DebeziumSchemaReader.buildConfig(
-                "postgresql://alice:secret@pg.example.com/llm_obs",
-                "topicPrefix");
+    void parseJdbcConfigDefaultsPortAndSslMode() {
+        JdbcConfiguration jdbc = DebeziumSchemaReader.parseJdbcConfig(
+                "postgresql://alice:secret@pg.example.com/llm_obs");
 
-        assertThat(config.getString("database.port")).isEqualTo("5432");
-        assertThat(config.getString("database.sslmode")).isEqualTo("prefer");
+        assertThat(jdbc.getPort()).isEqualTo(5432);
+        assertThat(jdbc.getString("sslmode")).isEqualTo("prefer");
     }
 
     @Test
-    void buildConfigAcceptsPostgresScheme() {
-        Configuration config = DebeziumSchemaReader.buildConfig(
-                "postgres://alice:secret@pg.example.com/llm_obs",
-                "topicPrefix");
+    void parseJdbcConfigAcceptsPostgresScheme() {
+        JdbcConfiguration jdbc = DebeziumSchemaReader.parseJdbcConfig(
+                "postgres://alice:secret@pg.example.com/llm_obs");
 
-        assertThat(config.getString("database.hostname")).isEqualTo("pg.example.com");
+        assertThat(jdbc.getHostname()).isEqualTo("pg.example.com");
     }
 
     @Test
-    void buildConfigDecodesPercentEncodedCredentials() {
-        Configuration config = DebeziumSchemaReader.buildConfig(
-                "postgresql://us%40r:p%40ss@pg.example.com/llm_obs",
-                "topicPrefix");
+    void parseJdbcConfigDecodesPercentEncodedCredentials() {
+        JdbcConfiguration jdbc = DebeziumSchemaReader.parseJdbcConfig(
+                "postgresql://us%40r:p%40ss@pg.example.com/llm_obs");
 
-        assertThat(config.getString("database.user")).isEqualTo("us@r");
-        assertThat(config.getString("database.password")).isEqualTo("p@ss");
+        assertThat(jdbc.getUser()).isEqualTo("us@r");
+        assertThat(jdbc.getPassword()).isEqualTo("p@ss");
     }
 
     @Test
-    void buildConfigHandlesUsernameOnly() {
-        Configuration config = DebeziumSchemaReader.buildConfig(
-                "postgresql://alice@pg.example.com/llm_obs",
-                "topicPrefix");
+    void parseJdbcConfigHandlesUsernameOnly() {
+        JdbcConfiguration jdbc = DebeziumSchemaReader.parseJdbcConfig(
+                "postgresql://alice@pg.example.com/llm_obs");
 
-        assertThat(config.getString("database.user")).isEqualTo("alice");
-        assertThat(config.getString("database.password")).isEqualTo("");
+        assertThat(jdbc.getUser()).isEqualTo("alice");
+        assertThat(jdbc.getPassword()).isEqualTo("");
     }
 
     @Test
-    void buildConfigRejectsNullOrBlank() {
-        assertThatThrownBy(() -> DebeziumSchemaReader.buildConfig(null, "topicPrefix"))
+    void parseJdbcConfigRejectsNullOrBlank() {
+        assertThatThrownBy(() -> DebeziumSchemaReader.parseJdbcConfig(null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("must not be empty");
-        assertThatThrownBy(() -> DebeziumSchemaReader.buildConfig("   ", "topicPrefix"))
+        assertThatThrownBy(() -> DebeziumSchemaReader.parseJdbcConfig("   "))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("must not be empty");
     }
 
     @Test
-    void buildConfigRejectsWrongScheme() {
-        assertThatThrownBy(() -> DebeziumSchemaReader.buildConfig(
-                "mysql://alice:secret@pg.example.com/llm_obs", "topicPrefix"))
+    void parseJdbcConfigRejectsWrongScheme() {
+        assertThatThrownBy(() -> DebeziumSchemaReader.parseJdbcConfig(
+                "mysql://alice:secret@pg.example.com/llm_obs"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("postgresql://");
     }
 
     @Test
-    void buildConfigRejectsMissingHost() {
-        assertThatThrownBy(() -> DebeziumSchemaReader.buildConfig(
-                "postgresql:///llm_obs", "topicPrefix"))
+    void parseJdbcConfigRejectsMissingHost() {
+        assertThatThrownBy(() -> DebeziumSchemaReader.parseJdbcConfig(
+                "postgresql:///llm_obs"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("missing the host");
     }
 
     @Test
-    void buildConfigRejectsMissingDatabase() {
-        assertThatThrownBy(() -> DebeziumSchemaReader.buildConfig(
-                "postgresql://alice:secret@pg.example.com", "topicPrefix"))
+    void parseJdbcConfigRejectsMissingDatabase() {
+        assertThatThrownBy(() -> DebeziumSchemaReader.parseJdbcConfig(
+                "postgresql://alice:secret@pg.example.com"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("missing the database");
-        assertThatThrownBy(() -> DebeziumSchemaReader.buildConfig(
-                "postgresql://alice:secret@pg.example.com/", "topicPrefix"))
+        assertThatThrownBy(() -> DebeziumSchemaReader.parseJdbcConfig(
+                "postgresql://alice:secret@pg.example.com/"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("missing the database");
     }
 
     @Test
-    void buildConfigRejectsMalformedUrl() {
-        assertThatThrownBy(() -> DebeziumSchemaReader.buildConfig(
-                "not a valid uri", "topicPrefix"))
+    void parseJdbcConfigRejectsMalformedUrl() {
+        assertThatThrownBy(() -> DebeziumSchemaReader.parseJdbcConfig(
+                "not a valid uri"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Invalid connection_string");
     }
