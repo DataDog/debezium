@@ -1,7 +1,6 @@
 package io.debezium.schematranslator.api;
 
 import com.sun.net.httpserver.HttpServer;
-import io.debezium.config.Configuration;
 import io.debezium.schematranslator.schema.AvroSchemaConverter;
 import io.debezium.schematranslator.schema.DebeziumSchemaReader;
 import io.debezium.schematranslator.schema.SchemaRegistryPublisher;
@@ -29,7 +28,6 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.Statement;
 import java.time.Duration;
-import java.util.Properties;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -72,11 +70,10 @@ class RegisterSchemasHandlerIT {
 
     private HttpServer handlerServer;
     private int handlerPort;
-    private DebeziumSchemaReader reader;
 
     @BeforeEach
     void setUp() throws Exception {
-        reader = new DebeziumSchemaReader(buildConfig());
+        DebeziumSchemaReader reader = new DebeziumSchemaReader("test");
         String srUrl = "http://localhost:" + schemaRegistry.getMappedPort(8081);
         SchemaRegistryPublisher publisher = new SchemaRegistryPublisher(srUrl);
 
@@ -104,9 +101,8 @@ class RegisterSchemasHandlerIT {
     }
 
     @AfterEach
-    void tearDown() throws Exception {
+    void tearDown() {
         handlerServer.stop(0);
-        reader.close();
     }
 
     @Test
@@ -117,7 +113,7 @@ class RegisterSchemasHandlerIT {
                 "  price NUMERIC" +
                 ")");
 
-        HttpURLConnection conn = post("{\"tables\":[\"public.products\"]}");
+        HttpURLConnection conn = post(registerBody("public.products"));
         String body = new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
 
         assertThat(conn.getResponseCode()).isEqualTo(200);
@@ -142,13 +138,13 @@ class RegisterSchemasHandlerIT {
                 "  name TEXT NOT NULL" +
                 ")");
 
-        HttpURLConnection conn1 = post("{\"tables\":[\"public.evolution_ok\"]}");
+        HttpURLConnection conn1 = post(registerBody("public.evolution_ok"));
         assertThat(conn1.getResponseCode()).isEqualTo(200);
         conn1.getInputStream().readAllBytes(); // drain
 
         execute("ALTER TABLE public.evolution_ok ADD COLUMN notes TEXT");
 
-        HttpURLConnection conn2 = post("{\"tables\":[\"public.evolution_ok\"]}");
+        HttpURLConnection conn2 = post(registerBody("public.evolution_ok"));
         String body = new String(conn2.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
 
         assertThat(conn2.getResponseCode()).isEqualTo(200);
@@ -168,13 +164,13 @@ class RegisterSchemasHandlerIT {
                 "  name TEXT NOT NULL" +
                 ")");
 
-        HttpURLConnection conn1 = post("{\"tables\":[\"public.evolution_bad\"]}");
+        HttpURLConnection conn1 = post(registerBody("public.evolution_bad"));
         assertThat(conn1.getResponseCode()).isEqualTo(200);
         conn1.getInputStream().readAllBytes(); // drain
 
         execute("ALTER TABLE public.evolution_bad ADD COLUMN required_flag TEXT NOT NULL");
 
-        HttpURLConnection conn2 = post("{\"tables\":[\"public.evolution_bad\"]}");
+        HttpURLConnection conn2 = post(registerBody("public.evolution_bad"));
         assertThat(conn2.getResponseCode()).isEqualTo(409);
         InputStream errStream = conn2.getErrorStream();
         String errorBody = errStream != null ? new String(errStream.readAllBytes(), StandardCharsets.UTF_8) : "";
@@ -197,7 +193,7 @@ class RegisterSchemasHandlerIT {
                 "  label TEXT NOT NULL" +
                 ")");
 
-        HttpURLConnection postConn = post("{\"tables\":[\"public.delete_test\"]}");
+        HttpURLConnection postConn = post(registerBody("public.delete_test"));
         assertThat(postConn.getResponseCode()).isEqualTo(200);
         postConn.getInputStream().readAllBytes(); // drain
 
@@ -228,19 +224,24 @@ class RegisterSchemasHandlerIT {
         assertThat(emptyJson.get("deleted_count").asInt()).isEqualTo(0);
     }
 
-    private static Configuration buildConfig() {
-        Properties props = new Properties();
-        props.put("database.hostname", postgres.getHost());
-        props.put("database.port", String.valueOf(postgres.getMappedPort(5432)));
-        props.put("database.dbname", postgres.getDatabaseName());
-        props.put("database.user", postgres.getUsername());
-        props.put("database.password", postgres.getPassword());
-        props.put("database.sslmode", "disable");
-        props.put("topic.prefix", "test");
-        props.put("schema.name.adjustment.mode", "avro");
-        props.put("plugin.name", "pgoutput");
-        props.put("slot.name", "dummy_slot");
-        return Configuration.from(props);
+    @Test
+    void missingConnectionStringReturns400() throws Exception {
+        HttpURLConnection conn = post("{\"tables\":[\"public.products\"]}");
+        assertThat(conn.getResponseCode()).isEqualTo(400);
+        InputStream errStream = conn.getErrorStream();
+        String errorBody = errStream != null ? new String(errStream.readAllBytes(), StandardCharsets.UTF_8) : "";
+        assertThat(errorBody).contains("connection_string");
+    }
+
+    private static String connectionString() {
+        return String.format("postgresql://%s:%s@%s:%d/%s?sslmode=disable",
+                postgres.getUsername(), postgres.getPassword(),
+                postgres.getHost(), postgres.getMappedPort(5432),
+                postgres.getDatabaseName());
+    }
+
+    private static String registerBody(String table) {
+        return "{\"tables\":[\"" + table + "\"],\"connection_string\":\"" + connectionString() + "\"}";
     }
 
     private HttpURLConnection post(String jsonBody) throws Exception {
