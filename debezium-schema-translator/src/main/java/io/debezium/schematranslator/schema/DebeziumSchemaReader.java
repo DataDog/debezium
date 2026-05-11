@@ -25,7 +25,6 @@ import java.sql.SQLException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
 import java.util.Set;
 
 /**
@@ -49,7 +48,7 @@ public class DebeziumSchemaReader {
         this.topicPrefix = topicPrefix;
         // The topic naming strategy depends only on the topic prefix, so build it once here
         // from a config that has no Postgres connection details.
-        PostgresConnectorConfig baseConfig = new PostgresConnectorConfig(Configuration.from(baseProps(topicPrefix)));
+        PostgresConnectorConfig baseConfig = new PostgresConnectorConfig(baseConfig(topicPrefix));
         this.topicNamingStrategy = baseConfig.getTopicNamingStrategy(PostgresConnectorConfig.TOPIC_NAMING_STRATEGY);
     }
 
@@ -188,25 +187,25 @@ public class DebeziumSchemaReader {
             }
         }
 
-        Properties props = baseProps(topicPrefix);
-        props.put("database.hostname", host);
-        props.put("database.port", String.valueOf(port));
-        props.put("database.dbname", database);
-        props.put("database.user", user);
-        props.put("database.password", password);
-        props.put("database.sslmode", sslMode);
-        return Configuration.from(props);
+        return baseConfig(topicPrefix).edit()
+                .with("database.hostname", host)
+                .with("database.port", port)
+                .with("database.dbname", database)
+                .with("database.user", user)
+                .with("database.password", password)
+                .with("database.sslmode", sslMode)
+                .build();
     }
 
-    private static Properties baseProps(String topicPrefix) {
-        Properties props = new Properties();
-        props.put("topic.prefix", topicPrefix);
-        // Required for Avro-compatible schema names
-        props.put("schema.name.adjustment.mode", "avro");
-        // Required by config validation, never used at runtime
-        props.put("plugin.name", "pgoutput");
-        props.put("slot.name", "dummy_slot");
-        return props;
+    private static Configuration baseConfig(String topicPrefix) {
+        return Configuration.create()
+                .with("topic.prefix", topicPrefix)
+                // Required for Avro-compatible schema names
+                .with("schema.name.adjustment.mode", "avro")
+                // Required by config validation, never used at runtime
+                .with("plugin.name", "pgoutput")
+                .with("slot.name", "dummy_slot")
+                .build();
     }
 
     /**
