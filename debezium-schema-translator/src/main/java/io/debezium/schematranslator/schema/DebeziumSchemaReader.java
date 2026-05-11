@@ -47,9 +47,9 @@ public class DebeziumSchemaReader {
     @SuppressWarnings("unchecked")
     public DebeziumSchemaReader(String topicPrefix) {
         this.topicPrefix = topicPrefix;
-        // The topic naming strategy depends only on the topic prefix, so it can be built once
+        // The topic naming strategy depends only on the topic prefix, so build it once here
         // from a config that has no Postgres connection details.
-        PostgresConnectorConfig baseConfig = new PostgresConnectorConfig(buildBaseConfig(topicPrefix));
+        PostgresConnectorConfig baseConfig = new PostgresConnectorConfig(Configuration.from(baseProps(topicPrefix)));
         this.topicNamingStrategy = baseConfig.getTopicNamingStrategy(PostgresConnectorConfig.TOPIC_NAMING_STRATEGY);
     }
 
@@ -198,10 +198,6 @@ public class DebeziumSchemaReader {
         return Configuration.from(props);
     }
 
-    private static Configuration buildBaseConfig(String topicPrefix) {
-        return Configuration.from(baseProps(topicPrefix));
-    }
-
     private static Properties baseProps(String topicPrefix) {
         Properties props = new Properties();
         props.put("topic.prefix", topicPrefix);
@@ -227,9 +223,6 @@ public class DebeziumSchemaReader {
                 : tableId;
     }
 
-    /**
-     * Returns the topic naming strategy, used to derive subjects for SR registration.
-     */
     public TopicNamingStrategy<TableId> getTopicNamingStrategy() {
         return topicNamingStrategy;
     }
