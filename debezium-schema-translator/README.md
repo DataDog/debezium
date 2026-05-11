@@ -20,16 +20,12 @@ Subject names follow Debezium's topic naming convention:
 
 ## Configuration
 
-All configuration is done via environment variables.
+Service-level configuration is done via environment variables. Postgres connection details are
+not part of the service config — they are supplied per request via the `connection_string` field
+in the request body.
 
 | Variable              | Default                    | Required | Description                                          |
 |-----------------------|----------------------------|----------|------------------------------------------------------|
-| `POSTGRES_HOST`       | `localhost`                |          | Postgres hostname                                  |
-| `POSTGRES_PORT`       | `5432`                     |          | Postgres port                                      |
-| `POSTGRES_DATABASE`   |                            | Yes      | Postgres database name                             |
-| `POSTGRES_USER`       | `postgres`                 |          | Postgres user                                      |
-| `POSTGRES_PASSWORD`   |                            | Yes      | Postgres password                                  |
-| `POSTGRES_SSL_MODE`   | `prefer`                   |          | SSL mode (`disable`, `prefer`, `require`, etc.)      |
 | `SCHEMA_REGISTRY_URL` | `http://localhost:8081`    |          | Confluent Schema Registry URL                        |
 | `TOPIC_PREFIX`        |                            | Yes      | Debezium topic prefix, used to derive subject names  |
 | `HTTP_PORT`           | `8080`                     |          | Port the HTTP server listens on                      |
@@ -57,11 +53,17 @@ Content-Type: application/json
 
 ```json
 {
-  "tables": ["public.users", "orders", "myschema.events"]
+  "tables": ["public.users", "orders", "myschema.events"],
+  "connection_string": "postgresql://user:password@host:5432/dbname"
 }
 ```
 
 Table names can be `schema.table` or just `table` (defaults to `public` schema).
+
+The `connection_string` is a Postgres URL of the form
+`postgresql://user:password@host:port/dbname[?sslmode=...]`. A new Postgres connection is opened
+for every request and closed before responding, so each call can target a different database.
+When omitted, the SSL mode defaults to `prefer`.
 
 **Success response (200):**
 
@@ -86,12 +88,12 @@ Table names can be `schema.table` or just `table` (defaults to `public` schema).
 
 **Error responses:**
 
-| Code | Cause                                                     |
-|------|-----------------------------------------------------------|
-| 400  | Invalid request body or missing `tables` field            |
-| 405  | Wrong HTTP method                                         |
-| 409  | Schema incompatible with an already-registered version    |
-| 500  | Postgres read error or Schema Registry error            |
+| Code | Cause                                                              |
+|------|--------------------------------------------------------------------|
+| 400  | Invalid request body, missing `tables`, or missing/malformed `connection_string` |
+| 405  | Wrong HTTP method                                                  |
+| 409  | Schema incompatible with an already-registered version             |
+| 500  | Postgres read error or Schema Registry error                       |
 
 Registration is idempotent: registering an identical schema multiple times returns the same schema ID and version.
 
@@ -127,7 +129,10 @@ curl -s http://localhost:8080/api/v1/schema-translator/health
 # (replace "public.my_table" with an actual table in your database)
 curl -s -X POST http://localhost:8080/api/v1/schema-translator/schemas \
   -H 'Content-Type: application/json' \
-  -d '{"tables": ["public.my_table"]}'
+  -d '{
+        "tables": ["public.my_table"],
+        "connection_string": "postgresql://postgres:postgres@postgres:5432/testdb"
+      }'
 
 # Inspect registered subjects in Schema Registry
 curl -s http://localhost:8081/subjects

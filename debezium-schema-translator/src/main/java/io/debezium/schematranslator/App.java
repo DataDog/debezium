@@ -29,7 +29,7 @@ public class App {
         LOGGER.info("Starting Debezium Schema Translator on port {}", config.getHttpPort());
 
         // Initialise core components
-        DebeziumSchemaReader schemaReader = new DebeziumSchemaReader(config.toDebeziumConfig());
+        DebeziumSchemaReader schemaReader = new DebeziumSchemaReader(config.getTopicPrefix());
         AvroSchemaConverter avroConverter = new AvroSchemaConverter();
         SchemaRegistryPublisher publisher = new SchemaRegistryPublisher(config.getSchemaRegistryUrl());
 
@@ -60,16 +60,10 @@ public class App {
 
         LOGGER.info("Debezium Schema Translator is running on port {}", config.getHttpPort());
 
-        // Register shutdown hook to stop the HTTP server and close the JDBC connection cleanly
+        // Register shutdown hook to stop the HTTP server cleanly
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             LOGGER.info("Shutting down...");
             server.stop(0);
-            try {
-                schemaReader.close();
-            }
-            catch (Exception e) {
-                LOGGER.warn("Error during shutdown", e);
-            }
         }));
     }
 }

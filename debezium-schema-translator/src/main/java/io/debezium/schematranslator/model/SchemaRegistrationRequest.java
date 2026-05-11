@@ -12,6 +12,9 @@ public class SchemaRegistrationRequest {
     @JsonProperty("tables")
     private List<String> tables;
 
+    @JsonProperty("connection_string")
+    private String connectionString;
+
     public SchemaRegistrationRequest() {
     }
 
@@ -21,5 +24,13 @@ public class SchemaRegistrationRequest {
 
     public void setTables(List<String> tables) {
         this.tables = tables;
+    }
+
+    public String getConnectionString() {
+        return connectionString;
+    }
+
+    public void setConnectionString(String connectionString) {
+        this.connectionString = connectionString;
     }
 }
