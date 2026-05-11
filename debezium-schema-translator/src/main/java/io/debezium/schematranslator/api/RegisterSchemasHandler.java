@@ -68,13 +68,26 @@ public class RegisterSchemasHandler implements HttpHandler {
             return;
         }
 
+        // Validate connection_string field
+        String connectionString = request.getConnectionString();
+        if (connectionString == null || connectionString.isBlank()) {
+            sendJson(exchange, 400,
+                    new ErrorResponse("Field 'connection_string' is required"));
+            return;
+        }
+
         List<String> tables = request.getTables();
         LOGGER.info("Processing schemas request for {} table(s): {}", tables.size(), tables);
 
         // Read schemas from Postgres
         Map<TableId, TableSchema> tableSchemas;
         try {
-            tableSchemas = schemaReader.readSchemas(tables);
+            tableSchemas = schemaReader.readSchemas(connectionString, tables);
+        }
+        catch (IllegalArgumentException e) {
+            LOGGER.warn("Invalid request: {}", e.getMessage());
+            sendJson(exchange, 400, new ErrorResponse(e.getMessage()));
+            return;
         }
         catch (Exception e) {
             LOGGER.error("Failed to read schemas from Postgres", e);

@@ -35,6 +35,9 @@ import static org.mockito.Mockito.*;
 @ExtendWith(MockitoExtension.class)
 class RegisterSchemasHandlerTest {
 
+    private static final String CONN = "postgresql://postgres:postgres@localhost:5432/testdb";
+    private static final String REQUEST_BODY = "{\"tables\":[\"public.users\"],\"connection_string\":\"" + CONN + "\"}";
+
     @Mock
     private DebeziumSchemaReader schemaReader;
     @Mock
@@ -71,7 +74,7 @@ class RegisterSchemasHandlerTest {
 
     @Test
     void missingTablesFieldReturns400() throws Exception {
-        HttpExchange exchange = mockExchange("POST", "{}");
+        HttpExchange exchange = mockExchange("POST", "{\"connection_string\":\"" + CONN + "\"}");
 
         handler.handle(exchange);
 
@@ -82,7 +85,7 @@ class RegisterSchemasHandlerTest {
 
     @Test
     void emptyTablesListReturns400() throws Exception {
-        HttpExchange exchange = mockExchange("POST", "{\"tables\":[]}");
+        HttpExchange exchange = mockExchange("POST", "{\"tables\":[],\"connection_string\":\"" + CONN + "\"}");
 
         handler.handle(exchange);
 
@@ -90,9 +93,44 @@ class RegisterSchemasHandlerTest {
     }
 
     @Test
-    void postgresErrorReturns500() throws Exception {
+    void missingConnectionStringReturns400() throws Exception {
         HttpExchange exchange = mockExchange("POST", "{\"tables\":[\"public.users\"]}");
-        when(schemaReader.readSchemas(anyList())).thenThrow(new RuntimeException("Connection refused"));
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(400), anyLong());
+        JsonNode response = objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
+        assertThat(response.get("error").get("message").asText()).contains("connection_string");
+    }
+
+    @Test
+    void blankConnectionStringReturns400() throws Exception {
+        HttpExchange exchange = mockExchange("POST", "{\"tables\":[\"public.users\"],\"connection_string\":\"   \"}");
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(400), anyLong());
+        JsonNode response = objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
+        assertThat(response.get("error").get("message").asText()).contains("connection_string");
+    }
+
+    @Test
+    void invalidConnectionStringReturns400() throws Exception {
+        HttpExchange exchange = mockExchange("POST", REQUEST_BODY);
+        when(schemaReader.readSchemas(anyString(), anyList()))
+                .thenThrow(new IllegalArgumentException("connection_string is missing the host"));
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(400), anyLong());
+        JsonNode response = objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
+        assertThat(response.get("error").get("message").asText()).contains("missing the host");
+    }
+
+    @Test
+    void postgresErrorReturns500() throws Exception {
+        HttpExchange exchange = mockExchange("POST", REQUEST_BODY);
+        when(schemaReader.readSchemas(anyString(), anyList())).thenThrow(new RuntimeException("Connection refused"));
 
         handler.handle(exchange);
 
@@ -103,7 +141,7 @@ class RegisterSchemasHandlerTest {
 
     @Test
     void schemaIncompatibilityReturns409() throws Exception {
-        HttpExchange exchange = mockExchange("POST", "{\"tables\":[\"public.users\"]}");
+        HttpExchange exchange = mockExchange("POST", REQUEST_BODY);
         setupSchemaReaderAndConverter();
         doThrow(new SchemaIncompatibilityException("incompatible schema", new Exception(),
                 "{\"old\":true}", "{\"new\":true}"))
@@ -124,7 +162,9 @@ class RegisterSchemasHandlerTest {
 
     @Test
     void multipleSchemaIncompatibilitiesReturnsAllErrors() throws Exception {
-        HttpExchange exchange = mockExchange("POST", "{\"tables\":[\"public.users\",\"public.orders\"]}");
+        HttpExchange exchange = mockExchange(
+                "POST",
+                "{\"tables\":[\"public.users\",\"public.orders\"],\"connection_string\":\"" + CONN + "\"}");
         setupSchemaReaderAndConverterForTables();
         doThrow(new SchemaIncompatibilityException("incompatible schema for users", new Exception(),
                 "{\"old\":\"users\"}", "{\"new\":\"users\"}"))
@@ -149,7 +189,7 @@ class RegisterSchemasHandlerTest {
 
     @Test
     void schemaRegistryIoErrorReturns500() throws Exception {
-        HttpExchange exchange = mockExchange("POST", "{\"tables\":[\"public.users\"]}");
+        HttpExchange exchange = mockExchange("POST", REQUEST_BODY);
         setupSchemaReaderAndConverter();
         doThrow(new IOException("network error"))
                 .when(publisher).register(any(), any(), any());
@@ -163,7 +203,7 @@ class RegisterSchemasHandlerTest {
 
     @Test
     void successfulRegistrationReturns200WithResults() throws Exception {
-        HttpExchange exchange = mockExchange("POST", "{\"tables\":[\"public.users\"]}");
+        HttpExchange exchange = mockExchange("POST", REQUEST_BODY);
         setupSchemaReaderAndConverter();
         when(publisher.register(eq("public.users"), eq("test.public.users-value"), any()))
                 .thenReturn(new RegisteredSchema("public.users", "test.public.users-value", 1, 1));
@@ -173,6 +213,7 @@ class RegisterSchemasHandlerTest {
         handler.handle(exchange);
 
         verify(exchange).sendResponseHeaders(eq(200), anyLong());
+        verify(schemaReader).readSchemas(eq(CONN), eq(List.of("public.users")));
         JsonNode response = objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
         assertThat(response.get("registered_schemas")).hasSize(2);
         JsonNode value = response.get("registered_schemas").get(0);
@@ -203,7 +244,7 @@ class RegisterSchemasHandlerTest {
         Map<TableId, TableSchema> schemas = new LinkedHashMap<>();
         schemas.put(usersId, usersSchema);
         schemas.put(ordersId, ordersSchema);
-        when(schemaReader.readSchemas(List.of("public.users", "public.orders"))).thenReturn(schemas);
+        when(schemaReader.readSchemas(eq(CONN), eq(List.of("public.users", "public.orders")))).thenReturn(schemas);
 
         TopicNamingStrategy<TableId> strategy = mock(TopicNamingStrategy.class);
         when(strategy.dataChangeTopic(usersId)).thenReturn("test.public.users");
@@ -226,7 +267,7 @@ class RegisterSchemasHandlerTest {
 
         Map<TableId, TableSchema> schemas = new LinkedHashMap<>();
         schemas.put(tableId, tableSchema);
-        when(schemaReader.readSchemas(List.of("public.users"))).thenReturn(schemas);
+        when(schemaReader.readSchemas(eq(CONN), eq(List.of("public.users")))).thenReturn(schemas);
 
         TopicNamingStrategy<TableId> strategy = mock(TopicNamingStrategy.class);
         when(strategy.dataChangeTopic(tableId)).thenReturn("test.public.users");

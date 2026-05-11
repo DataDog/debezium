@@ -1,9 +1,7 @@
 package io.debezium.schematranslator.schema;
 
-import io.debezium.config.Configuration;
 import io.debezium.relational.TableId;
 import io.debezium.relational.TableSchema;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -14,7 +12,6 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.Statement;
 import java.util.Map;
-import java.util.Properties;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -32,12 +29,7 @@ class DebeziumSchemaReaderIT {
 
     @BeforeEach
     void setUp() {
-        reader = new DebeziumSchemaReader(buildConfig());
-    }
-
-    @AfterEach
-    void tearDown() throws Exception {
-        reader.close();
+        reader = new DebeziumSchemaReader("test");
     }
 
     @Test
@@ -48,7 +40,7 @@ class DebeziumSchemaReaderIT {
                 "  email VARCHAR(255)" +
                 ")");
 
-        Map<TableId, TableSchema> schemas = reader.readSchemas(java.util.List.of("public.users"));
+        Map<TableId, TableSchema> schemas = reader.readSchemas(connectionString(), java.util.List.of("public.users"));
 
         assertThat(schemas).hasSize(1);
         TableSchema tableSchema = schemas.values().iterator().next();
@@ -59,7 +51,7 @@ class DebeziumSchemaReaderIT {
 
     @Test
     void throwsForUnknownTable() {
-        assertThatThrownBy(() -> reader.readSchemas(java.util.List.of("public.nonexistent")))
+        assertThatThrownBy(() -> reader.readSchemas(connectionString(), java.util.List.of("public.nonexistent")))
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("Table not found: public.nonexistent");
     }
@@ -71,7 +63,7 @@ class DebeziumSchemaReaderIT {
                 "  amount NUMERIC NOT NULL" +
                 ")");
 
-        Map<TableId, TableSchema> schemas = reader.readSchemas(java.util.List.of("orders"));
+        Map<TableId, TableSchema> schemas = reader.readSchemas(connectionString(), java.util.List.of("orders"));
 
         assertThat(schemas).hasSize(1);
         TableId tableId = schemas.keySet().iterator().next();
@@ -79,19 +71,11 @@ class DebeziumSchemaReaderIT {
         assertThat(tableId.table()).isEqualTo("orders");
     }
 
-    private Configuration buildConfig() {
-        Properties props = new Properties();
-        props.put("database.hostname", postgres.getHost());
-        props.put("database.port", String.valueOf(postgres.getMappedPort(5432)));
-        props.put("database.dbname", postgres.getDatabaseName());
-        props.put("database.user", postgres.getUsername());
-        props.put("database.password", postgres.getPassword());
-        props.put("database.sslmode", "disable");
-        props.put("topic.prefix", "test");
-        props.put("schema.name.adjustment.mode", "avro");
-        props.put("plugin.name", "pgoutput");
-        props.put("slot.name", "dummy_slot");
-        return Configuration.from(props);
+    private static String connectionString() {
+        return String.format("postgresql://%s:%s@%s:%d/%s?sslmode=disable",
+                postgres.getUsername(), postgres.getPassword(),
+                postgres.getHost(), postgres.getMappedPort(5432),
+                postgres.getDatabaseName());
     }
 
     private void execute(String sql) throws Exception {
