@@ -41,10 +41,15 @@ public class ErrorResponse {
         @JsonProperty("new_schema")
         private final String newSchema;
 
-        public SchemaError(String message, String oldSchema, String newSchema) {
+        @JsonProperty("columns")
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        private final List<ColumnEvolution> columns;
+
+        public SchemaError(String message, String oldSchema, String newSchema, List<ColumnEvolution> columns) {
             this.message = message;
             this.oldSchema = oldSchema;
             this.newSchema = newSchema;
+            this.columns = columns;
         }
 
         public String getMessage() {
@@ -57,6 +62,10 @@ public class ErrorResponse {
 
         public String getNewSchema() {
             return newSchema;
+        }
+
+        public List<ColumnEvolution> getColumns() {
+            return columns;
         }
     }
 
