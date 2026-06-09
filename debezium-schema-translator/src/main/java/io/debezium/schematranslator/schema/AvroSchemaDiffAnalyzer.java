@@ -32,23 +32,29 @@ public class AvroSchemaDiffAnalyzer {
     private static final Map<String, String> AVRO_PRIMITIVE_MAP = new LinkedHashMap<>();
 
     static {
-        DEBEZIUM_TYPE_MAP.put("io.debezium.data.Uuid", "uuid");
-        DEBEZIUM_TYPE_MAP.put("io.debezium.data.Json", "jsonb");
-        DEBEZIUM_TYPE_MAP.put("io.debezium.data.Enum", "enum");
-        DEBEZIUM_TYPE_MAP.put("io.debezium.data.Bits", "bit");
-        DEBEZIUM_TYPE_MAP.put("io.debezium.data.Ltree", "ltree");
-        DEBEZIUM_TYPE_MAP.put("io.debezium.data.Xml", "xml");
-        DEBEZIUM_TYPE_MAP.put("io.debezium.time.ZonedTimestamp", "timestamp with time zone");
-        DEBEZIUM_TYPE_MAP.put("io.debezium.time.ZonedTime", "time with time zone");
-        DEBEZIUM_TYPE_MAP.put("io.debezium.time.Timestamp", "timestamp");
-        DEBEZIUM_TYPE_MAP.put("io.debezium.time.MicroTimestamp", "timestamp (microseconds)");
-        DEBEZIUM_TYPE_MAP.put("io.debezium.time.NanoTimestamp", "timestamp (nanoseconds)");
-        DEBEZIUM_TYPE_MAP.put("io.debezium.time.Date", "date");
-        DEBEZIUM_TYPE_MAP.put("io.debezium.time.Time", "time");
-        DEBEZIUM_TYPE_MAP.put("io.debezium.time.MicroTime", "time (microseconds)");
-        DEBEZIUM_TYPE_MAP.put("io.debezium.time.NanoTime", "time (nanoseconds)");
-        DEBEZIUM_TYPE_MAP.put("io.debezium.time.Interval", "interval");
-        DEBEZIUM_TYPE_MAP.put("io.debezium.time.MicroDuration", "interval (microseconds)");
+        // Keys are sourced from Debezium's own logical-type name constants (rather than literal
+        // strings) so they stay in lockstep with the library and fail to compile if a type is
+        // renamed or removed. The Postgres-style label values, by contrast, must be authored here:
+        // Debezium models the forward Postgres-type -> schema direction in the connector's type
+        // registry (which needs a live column/OID), but exposes no reverse logical-type -> Postgres
+        // label mapping, and at diff time we only have the Avro schema, not the source columns.
+        DEBEZIUM_TYPE_MAP.put(io.debezium.data.Uuid.LOGICAL_NAME, "uuid");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.data.Json.LOGICAL_NAME, "jsonb");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.data.Enum.LOGICAL_NAME, "enum");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.data.Bits.LOGICAL_NAME, "bit");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.connector.postgresql.data.Ltree.LOGICAL_NAME, "ltree");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.data.Xml.LOGICAL_NAME, "xml");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.time.ZonedTimestamp.SCHEMA_NAME, "timestamp with time zone");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.time.ZonedTime.SCHEMA_NAME, "time with time zone");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.time.Timestamp.SCHEMA_NAME, "timestamp");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.time.MicroTimestamp.SCHEMA_NAME, "timestamp (microseconds)");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.time.NanoTimestamp.SCHEMA_NAME, "timestamp (nanoseconds)");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.time.Date.SCHEMA_NAME, "date");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.time.Time.SCHEMA_NAME, "time");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.time.MicroTime.SCHEMA_NAME, "time (microseconds)");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.time.NanoTime.SCHEMA_NAME, "time (nanoseconds)");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.time.Interval.SCHEMA_NAME, "interval");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.time.MicroDuration.SCHEMA_NAME, "interval (microseconds)");
 
         AVRO_PRIMITIVE_MAP.put("string", "text");
         AVRO_PRIMITIVE_MAP.put("int", "integer");
