@@ -161,6 +161,55 @@ class RegisterSchemasHandlerTest {
     }
 
     @Test
+    void schemaIncompatibilityIncludesStructuredColumnDiff() throws Exception {
+        HttpExchange exchange = mockExchange("POST", REQUEST_BODY);
+        setupSchemaReaderAndConverter();
+        String oldSchema = """
+                {"type": "record", "name": "Envelope", "fields": [
+                  {"name": "before", "type": ["null", {"type": "record", "name": "Value", "fields": [
+                    {"name": "ttl", "type": ["null", {"type": "string", "connect.name": "io.debezium.time.ZonedTimestamp"}]}
+                  ]}]}
+                ]}""";
+        String newSchema = """
+                {"type": "record", "name": "Envelope", "fields": [
+                  {"name": "before", "type": ["null", {"type": "record", "name": "Value", "fields": [
+                    {"name": "ttl", "type": {"type": "string", "connect.name": "io.debezium.time.ZonedTimestamp"}}
+                  ]}]}
+                ]}""";
+        doThrow(new SchemaIncompatibilityException("incompatible schema", new Exception(), oldSchema, newSchema))
+                .when(publisher).register(any(), any(), any());
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(409), anyLong());
+        JsonNode response = objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
+        JsonNode columns = response.get("error").get("errors").get(0).get("columns");
+        assertThat(columns).hasSize(1);
+        JsonNode ttl = columns.get(0);
+        assertThat(ttl.get("column").asText()).isEqualTo("ttl");
+        assertThat(ttl.get("change").asText()).isEqualTo("modified");
+        assertThat(ttl.get("old").get("label").asText()).isEqualTo("nullable timestamp with time zone");
+        assertThat(ttl.get("old").get("avro").asText()).isEqualTo("[\"null\", ZonedTimestamp]");
+        assertThat(ttl.get("new").get("label").asText()).isEqualTo("timestamp with time zone");
+        assertThat(ttl.get("new").get("avro").asText()).isEqualTo("ZonedTimestamp");
+    }
+
+    @Test
+    void schemaIncompatibilityOmitsColumnsWhenSchemasUnparseable() throws Exception {
+        HttpExchange exchange = mockExchange("POST", REQUEST_BODY);
+        setupSchemaReaderAndConverter();
+        doThrow(new SchemaIncompatibilityException("incompatible schema", new Exception(),
+                "{\"old\":true}", "{\"new\":true}"))
+                .when(publisher).register(any(), any(), any());
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(409), anyLong());
+        JsonNode response = objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
+        assertThat(response.get("error").get("errors").get(0).has("columns")).isFalse();
+    }
+
+    @Test
     void multipleSchemaIncompatibilitiesReturnsAllErrors() throws Exception {
         HttpExchange exchange = mockExchange(
                 "POST",

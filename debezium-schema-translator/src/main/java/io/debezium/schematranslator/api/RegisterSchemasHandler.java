@@ -9,7 +9,9 @@ import io.debezium.schematranslator.model.ErrorResponse;
 import io.debezium.schematranslator.model.RegisteredSchema;
 import io.debezium.schematranslator.model.SchemaRegistrationRequest;
 import io.debezium.schematranslator.model.SchemaRegistrationResponse;
+import io.debezium.schematranslator.model.ColumnEvolution;
 import io.debezium.schematranslator.schema.AvroSchemaConverter;
+import io.debezium.schematranslator.schema.AvroSchemaDiffAnalyzer;
 import io.debezium.schematranslator.schema.DebeziumSchemaReader;
 import io.debezium.schematranslator.schema.SchemaRegistryPublisher;
 import io.debezium.schematranslator.schema.SchemaRegistryPublisher.SchemaIncompatibilityException;
@@ -34,6 +36,7 @@ public class RegisterSchemasHandler implements HttpHandler {
     private final DebeziumSchemaReader schemaReader;
     private final AvroSchemaConverter avroConverter;
     private final SchemaRegistryPublisher publisher;
+    private final AvroSchemaDiffAnalyzer diffAnalyzer;
 
     public RegisterSchemasHandler(DebeziumSchemaReader schemaReader,
                                   AvroSchemaConverter avroConverter,
@@ -42,6 +45,7 @@ public class RegisterSchemasHandler implements HttpHandler {
         this.schemaReader = schemaReader;
         this.avroConverter = avroConverter;
         this.publisher = publisher;
+        this.diffAnalyzer = new AvroSchemaDiffAnalyzer();
     }
 
     @Override
@@ -125,7 +129,10 @@ public class RegisterSchemasHandler implements HttpHandler {
             }
             catch (SchemaIncompatibilityException e) {
                 LOGGER.warn("Schema incompatibility for table '{}': {}", originalTableName, e.getMessage());
-                incompatibilityErrors.add(new ErrorResponse.SchemaError(e.getMessage(), e.getOldSchema(), e.getNewSchema()));
+                List<ColumnEvolution> columns = diffAnalyzer.diff(e.getOldSchema(), e.getNewSchema());
+                incompatibilityErrors.add(new ErrorResponse.SchemaError(
+                        e.getMessage(), e.getOldSchema(), e.getNewSchema(),
+                        columns.isEmpty() ? null : columns));
             }
             catch (IOException e) {
                 LOGGER.error("Failed to register schema for table '{}'", originalTableName, e);
