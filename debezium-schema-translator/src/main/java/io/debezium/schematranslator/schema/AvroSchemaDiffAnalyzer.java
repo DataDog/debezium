@@ -44,6 +44,19 @@ public class AvroSchemaDiffAnalyzer {
         DEBEZIUM_TYPE_MAP.put(io.debezium.data.Bits.LOGICAL_NAME, "bit");
         DEBEZIUM_TYPE_MAP.put(io.debezium.connector.postgresql.data.Ltree.LOGICAL_NAME, "ltree");
         DEBEZIUM_TYPE_MAP.put(io.debezium.data.Xml.LOGICAL_NAME, "xml");
+        // NUMERIC/DECIMAL and MONEY in the default precise mode (fixed scale -> Decimal, variable
+        // scale -> VariableScaleDecimal). In double/string modes they serialize as plain double or
+        // string and are covered by AVRO_PRIMITIVE_MAP instead.
+        DEBEZIUM_TYPE_MAP.put(org.apache.kafka.connect.data.Decimal.LOGICAL_NAME, "numeric");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.data.VariableScaleDecimal.LOGICAL_NAME, "numeric");
+        // PostGIS types.
+        DEBEZIUM_TYPE_MAP.put(io.debezium.data.geometry.Geometry.LOGICAL_NAME, "geometry");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.data.geometry.Geography.LOGICAL_NAME, "geography");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.data.geometry.Point.LOGICAL_NAME, "point");
+        // pgvector types.
+        DEBEZIUM_TYPE_MAP.put(io.debezium.data.vector.DoubleVector.LOGICAL_NAME, "vector");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.data.vector.FloatVector.LOGICAL_NAME, "halfvec");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.data.vector.SparseDoubleVector.LOGICAL_NAME, "sparsevec");
         DEBEZIUM_TYPE_MAP.put(io.debezium.time.ZonedTimestamp.SCHEMA_NAME, "timestamp with time zone");
         DEBEZIUM_TYPE_MAP.put(io.debezium.time.ZonedTime.SCHEMA_NAME, "time with time zone");
         DEBEZIUM_TYPE_MAP.put(io.debezium.time.Timestamp.SCHEMA_NAME, "timestamp");

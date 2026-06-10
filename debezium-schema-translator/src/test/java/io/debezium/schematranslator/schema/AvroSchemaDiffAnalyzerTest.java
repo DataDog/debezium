@@ -125,6 +125,38 @@ class AvroSchemaDiffAnalyzerTest {
     }
 
     @Test
+    void mapsDecimalToNumericNotBytea() {
+        // NUMERIC serializes as a Decimal logical type over Avro bytes; it must read as "numeric",
+        // not fall through to the bytes -> "bytea" primitive mapping.
+        String oldSchema = envelope("{\"name\": \"id\", \"type\": \"int\"}");
+        String newSchema = envelope(
+                "{\"name\": \"id\", \"type\": \"int\"}, "
+                        + "{\"name\": \"amount\", \"type\": {\"type\": \"bytes\", "
+                        + "\"connect.name\": \"org.apache.kafka.connect.data.Decimal\"}}");
+
+        List<ColumnEvolution> changes = analyzer.diff(oldSchema, newSchema);
+
+        assertThat(changes).hasSize(1);
+        assertThat(changes.get(0).getColumn()).isEqualTo("amount");
+        assertThat(changes.get(0).getNewType().getLabel()).isEqualTo("numeric");
+        assertThat(changes.get(0).getNewType().getAvro()).isEqualTo("Decimal");
+    }
+
+    @Test
+    void mapsPostgisAndVectorTypes() {
+        String oldSchema = envelope("{\"name\": \"id\", \"type\": \"int\"}");
+        String newSchema = envelope(
+                "{\"name\": \"id\", \"type\": \"int\"}, "
+                        + "{\"name\": \"geom\", \"type\": {\"type\": \"bytes\", \"connect.name\": \"io.debezium.data.geometry.Geometry\"}}, "
+                        + "{\"name\": \"embedding\", \"type\": {\"type\": \"array\", \"connect.name\": \"io.debezium.data.DoubleVector\"}}");
+
+        List<ColumnEvolution> changes = analyzer.diff(oldSchema, newSchema);
+
+        assertThat(changes).extracting(c -> c.getColumn() + ":" + c.getNewType().getLabel())
+                .containsExactlyInAnyOrder("geom:geometry", "embedding:vector");
+    }
+
+    @Test
     void ignoresIdenticalSchemas() {
         String schema = envelope(
                 "{\"name\": \"id\", \"type\": \"int\"}, {\"name\": \"name\", \"type\": \"string\"}");
