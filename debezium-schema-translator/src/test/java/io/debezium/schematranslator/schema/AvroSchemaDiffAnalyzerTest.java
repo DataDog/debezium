@@ -157,6 +157,21 @@ class AvroSchemaDiffAnalyzerTest {
     }
 
     @Test
+    void mapsAlternateTemporalPrecisionModes() {
+        // connect mode uses Kafka Connect logical types; isostring mode uses io.debezium.time.Iso*.
+        String oldSchema = envelope("{\"name\": \"id\", \"type\": \"int\"}");
+        String newSchema = envelope(
+                "{\"name\": \"id\", \"type\": \"int\"}, "
+                        + "{\"name\": \"created\", \"type\": {\"type\": \"long\", \"connect.name\": \"org.apache.kafka.connect.data.Timestamp\"}}, "
+                        + "{\"name\": \"updated\", \"type\": {\"type\": \"string\", \"connect.name\": \"io.debezium.time.IsoTimestamp\"}}");
+
+        List<ColumnEvolution> changes = analyzer.diff(oldSchema, newSchema);
+
+        assertThat(changes).extracting(c -> c.getColumn() + ":" + c.getNewType().getLabel())
+                .containsExactlyInAnyOrder("created:timestamp", "updated:timestamp");
+    }
+
+    @Test
     void ignoresIdenticalSchemas() {
         String schema = envelope(
                 "{\"name\": \"id\", \"type\": \"int\"}, {\"name\": \"name\", \"type\": \"string\"}");

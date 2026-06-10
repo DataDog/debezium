@@ -68,6 +68,16 @@ public class AvroSchemaDiffAnalyzer {
         DEBEZIUM_TYPE_MAP.put(io.debezium.time.NanoTime.SCHEMA_NAME, "time (nanoseconds)");
         DEBEZIUM_TYPE_MAP.put(io.debezium.time.Interval.SCHEMA_NAME, "interval");
         DEBEZIUM_TYPE_MAP.put(io.debezium.time.MicroDuration.SCHEMA_NAME, "interval (microseconds)");
+        // Temporal types under time.precision.mode=connect (Kafka Connect logical types). Timestamp
+        // is registered before Time because "...data.Time" is a substring of "...data.Timestamp"
+        // and the partial-name fallback below matches on containment.
+        DEBEZIUM_TYPE_MAP.put(org.apache.kafka.connect.data.Timestamp.LOGICAL_NAME, "timestamp");
+        DEBEZIUM_TYPE_MAP.put(org.apache.kafka.connect.data.Date.LOGICAL_NAME, "date");
+        DEBEZIUM_TYPE_MAP.put(org.apache.kafka.connect.data.Time.LOGICAL_NAME, "time");
+        // Temporal types under time.precision.mode=isostring (ISO-8601 strings).
+        DEBEZIUM_TYPE_MAP.put(io.debezium.time.IsoTimestamp.SCHEMA_NAME, "timestamp");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.time.IsoDate.SCHEMA_NAME, "date");
+        DEBEZIUM_TYPE_MAP.put(io.debezium.time.IsoTime.SCHEMA_NAME, "time");
 
         AVRO_PRIMITIVE_MAP.put("string", "text");
         AVRO_PRIMITIVE_MAP.put("int", "integer");
