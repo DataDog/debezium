@@ -8,7 +8,8 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  *
  * <p>Each change carries both a Postgres-style {@code label} (e.g. "nullable timestamp with
  * time zone") and the concise Avro-level {@code avro} form (e.g. {@code ["null", ZonedTimestamp]}),
- * so consumers can render a meaningful diff without re-parsing the raw Avro schemas.
+ * so consumers can render a meaningful diff without re-parsing the raw Avro schemas. A column that
+ * is a likely cause of the incompatibility also carries a {@code reason} explaining why.
  */
 public class ColumnEvolution {
 
@@ -44,11 +45,21 @@ public class ColumnEvolution {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     private final TypeRef newType;
 
+    /** Why this column breaks Avro backward compatibility; {@code null} when it is not the cause. */
+    @JsonProperty("reason")
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private final String reason;
+
     public ColumnEvolution(String column, ChangeType change, TypeRef oldType, TypeRef newType) {
+        this(column, change, oldType, newType, null);
+    }
+
+    public ColumnEvolution(String column, ChangeType change, TypeRef oldType, TypeRef newType, String reason) {
         this.column = column;
         this.change = change.getValue();
         this.oldType = oldType;
         this.newType = newType;
+        this.reason = reason;
     }
 
     public String getColumn() {
@@ -65,6 +76,10 @@ public class ColumnEvolution {
 
     public TypeRef getNewType() {
         return newType;
+    }
+
+    public String getReason() {
+        return reason;
     }
 
     /**

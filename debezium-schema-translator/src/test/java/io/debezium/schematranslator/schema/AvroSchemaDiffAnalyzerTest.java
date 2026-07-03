@@ -95,6 +95,55 @@ class AvroSchemaDiffAnalyzerTest {
     }
 
     @Test
+    void addedColumnWithoutDefaultExplainsBackwardIncompatibility() {
+        String oldSchema = envelope("{\"name\": \"id\", \"type\": \"int\"}");
+        String newSchema = envelope(
+                "{\"name\": \"id\", \"type\": \"int\"}, {\"name\": \"email\", \"type\": \"string\"}");
+
+        List<ColumnEvolution> changes = analyzer.diff(oldSchema, newSchema);
+
+        assertThat(changes).hasSize(1);
+        assertThat(changes.get(0).getColumn()).isEqualTo("email");
+        assertThat(changes.get(0).getReason())
+                .contains("NOT NULL without a usable default")
+                .doesNotContain("debezium/dbz");
+    }
+
+    @Test
+    void addedColumnWithDefaultHasNoReason() {
+        // A nullable column carries a default (null), so adding it is backward compatible.
+        String oldSchema = envelope("{\"name\": \"id\", \"type\": \"int\"}");
+        String newSchema = envelope(
+                "{\"name\": \"id\", \"type\": \"int\"}, "
+                        + "{\"name\": \"nickname\", \"type\": [\"null\", \"string\"], \"default\": null}");
+
+        List<ColumnEvolution> changes = analyzer.diff(oldSchema, newSchema);
+
+        assertThat(changes).hasSize(1);
+        assertThat(changes.get(0).getChange()).isEqualTo("added");
+        assertThat(changes.get(0).getReason()).isNull();
+    }
+
+    @Test
+    void addedArrayColumnReasonPointsToUpstreamDebeziumBug() {
+        // text[] NOT NULL DEFAULT '{}' — the array converter omits the default, so it looks
+        // incompatible; the reason must point to the upstream Debezium bug.
+        String oldSchema = envelope("{\"name\": \"id\", \"type\": \"int\"}");
+        String newSchema = envelope(
+                "{\"name\": \"id\", \"type\": \"int\"}, "
+                        + "{\"name\": \"aggregation_keys\", "
+                        + "\"type\": {\"type\": \"array\", \"items\": [\"null\", \"string\"]}}");
+
+        List<ColumnEvolution> changes = analyzer.diff(oldSchema, newSchema);
+
+        assertThat(changes).hasSize(1);
+        assertThat(changes.get(0).getColumn()).isEqualTo("aggregation_keys");
+        assertThat(changes.get(0).getReason())
+                .contains("array")
+                .contains("https://github.com/debezium/dbz/issues/1269");
+    }
+
+    @Test
     void detectsRemovedColumn() {
         String oldSchema = envelope(
                 "{\"name\": \"id\", \"type\": \"int\"}, {\"name\": \"legacy\", \"type\": \"string\"}");

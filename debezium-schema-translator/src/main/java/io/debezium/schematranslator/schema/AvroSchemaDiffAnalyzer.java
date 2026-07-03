@@ -114,13 +114,14 @@ public class AvroSchemaDiffAnalyzer {
 
         for (Map.Entry<String, JsonNode> entry : oldFields.entrySet()) {
             String column = entry.getKey();
-            JsonNode oldType = entry.getValue();
-            JsonNode newType = newFields.get(column);
-            if (newType == null) {
+            JsonNode oldType = entry.getValue().get("type");
+            JsonNode newField = newFields.get(column);
+            if (newField == null) {
                 changes.add(new ColumnEvolution(column, ColumnEvolution.ChangeType.REMOVED,
                         new TypeRef(typeLabel(oldType), typeShort(oldType)), null));
                 continue;
             }
+            JsonNode newType = newField.get("type");
             if (!oldType.equals(newType)) {
                 String oldLabel = typeLabel(oldType);
                 String newLabel = typeLabel(newType);
@@ -135,9 +136,11 @@ public class AvroSchemaDiffAnalyzer {
         for (Map.Entry<String, JsonNode> entry : newFields.entrySet()) {
             String column = entry.getKey();
             if (!oldFields.containsKey(column)) {
-                JsonNode newType = entry.getValue();
+                JsonNode newField = entry.getValue();
+                JsonNode newType = newField.get("type");
                 changes.add(new ColumnEvolution(column, ColumnEvolution.ChangeType.ADDED,
-                        null, new TypeRef(typeLabel(newType), typeShort(newType))));
+                        null, new TypeRef(typeLabel(newType), typeShort(newType)),
+                        addedColumnReason(newField, newType)));
             }
         }
 
@@ -145,8 +148,55 @@ public class AvroSchemaDiffAnalyzer {
     }
 
     /**
-     * Extracts the column name to type-node mapping from an Envelope schema's {@code before.Value}
-     * record. Insertion order is preserved.
+     * Explains, in end-user terms, why adding this column breaks backward compatibility, or
+     * {@code null} when the column can be defaulted and is therefore compatible.
+     *
+     * <p>Adding a column stays compatible only if existing records can be given a value for it.
+     * Nullable columns get that for free (they default to null); a {@code NOT NULL} column needs a
+     * usable default, and here it has none. For array columns a Debezium bug can silently drop a
+     * default that was provided, so the message adds a pointer to check whether that is the case
+     * (see https://github.com/debezium/dbz/issues/1269) — we cannot tell from the schema alone.
+     */
+    private static String addedColumnReason(JsonNode field, JsonNode type) {
+        if (field.has("default")) {
+            return null;
+        }
+        String reason = "Adding a column only stays compatible if existing records can be given a "
+                + "value for it. Nullable columns get this automatically (they default to null), but "
+                + "this column was added as NOT NULL without a usable default, so there is no value "
+                + "to fill in for existing records. To fix this, make the column nullable, or give "
+                + "it a default value.";
+        if (containsArray(type)) {
+            reason += " This is an array column: if you did add a default, it may have been dropped "
+                    + "by a known Debezium bug — see https://github.com/debezium/dbz/issues/1269 to "
+                    + "check whether this is your case.";
+        }
+        return reason;
+    }
+
+    /** Whether the Avro type is an {@code array}, or a union that contains one. */
+    private static boolean containsArray(JsonNode type) {
+        if (type == null) {
+            return false;
+        }
+        if (type.isArray()) {
+            for (JsonNode element : type) {
+                if (containsArray(element)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (type.isObject()) {
+            return "array".equals(text(type, "type"));
+        }
+        return "array".equals(type.asText());
+    }
+
+    /**
+     * Extracts the column name to field-node mapping from an Envelope schema's {@code before.Value}
+     * record. The value is the full field node (carrying {@code type} and any {@code default}).
+     * Insertion order is preserved.
      */
     private static Map<String, JsonNode> valueFields(JsonNode envelope) {
         Map<String, JsonNode> fields = new LinkedHashMap<>();
@@ -170,7 +220,7 @@ public class AvroSchemaDiffAnalyzer {
                             String name = text(valueField, "name");
                             JsonNode fieldType = valueField.get("type");
                             if (name != null && fieldType != null) {
-                                fields.put(name, fieldType);
+                                fields.put(name, valueField);
                             }
                         }
                     }
