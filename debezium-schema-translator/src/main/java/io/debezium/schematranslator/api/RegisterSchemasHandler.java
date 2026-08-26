@@ -108,10 +108,8 @@ public class RegisterSchemasHandler implements HttpHandler {
             TableSchema tableSchema = entry.getValue();
             String originalTableName = tables.get(tableIndex++);
 
-            // Derive subjects from topic name
-            String topic = schemaReader.getTopicNamingStrategy().dataChangeTopic(tableId);
-            String valueSubject = topic + "-value";
-            String keySubject = topic + "-key";
+            String valueSubject = schemaReader.getTopicNamer().valueSubject(tableId);
+            String keySubject = schemaReader.getTopicNamer().keySubject(tableId);
 
             // Convert schemas from Connect to Avro
             org.apache.kafka.connect.data.Schema envelopeConnectSchema = tableSchema.getEnvelopeSchema().schema();

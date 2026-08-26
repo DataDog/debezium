@@ -5,18 +5,30 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import io.debezium.schematranslator.model.ErrorResponse;
 import io.debezium.schematranslator.model.RegisteredSchema;
+import io.debezium.schematranslator.model.SchemaDeletionRequest;
 import io.debezium.schematranslator.model.SchemaDeletionResponse;
 import io.debezium.schematranslator.schema.SchemaRegistryPublisher;
+import io.debezium.schematranslator.schema.TopicNamer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Handles DELETE /api/v1/schema-translator/schemas.
+ *
+ * <p>The request body is optional. When it is absent, or carries no {@code tables} field, every
+ * subject in the Schema Registry is deleted. When {@code tables} is set, only the {@code -value}
+ * and {@code -key} subjects of those tables are deleted.
  */
 public class DeleteSchemasHandler implements HttpHandler {
 
@@ -24,11 +36,13 @@ public class DeleteSchemasHandler implements HttpHandler {
 
     private final ObjectMapper objectMapper;
     private final SchemaRegistryPublisher publisher;
+    private final TopicNamer topicNamer;
     private final String topicPrefix;
 
-    public DeleteSchemasHandler(SchemaRegistryPublisher publisher, String topicPrefix) {
+    public DeleteSchemasHandler(SchemaRegistryPublisher publisher, TopicNamer topicNamer, String topicPrefix) {
         this.objectMapper = new ObjectMapper();
         this.publisher = publisher;
+        this.topicNamer = topicNamer;
         this.topicPrefix = topicPrefix;
     }
 
@@ -39,14 +53,73 @@ public class DeleteSchemasHandler implements HttpHandler {
             return;
         }
 
-        List<String> subjects;
+        SchemaDeletionRequest request;
         try {
-            subjects = publisher.getAllSubjects();
+            request = readRequest(exchange);
+        }
+        catch (Exception e) {
+            sendJson(exchange, 400, new ErrorResponse("Invalid JSON request body: " + e.getMessage()));
+            return;
+        }
+
+        List<String> tables = request == null ? null : request.getTables();
+        if (tables != null && tables.isEmpty()) {
+            sendJson(exchange, 400,
+                    new ErrorResponse("Field 'tables' must contain at least one entry when provided"));
+            return;
+        }
+
+        List<String> allSubjects;
+        try {
+            allSubjects = publisher.getAllSubjects();
         }
         catch (IOException e) {
             LOGGER.error("Failed to retrieve subjects from Schema Registry", e);
             sendJson(exchange, 500, new ErrorResponse("Could not connect to the Schema Registry"));
             return;
+        }
+
+        Collection<String> subjects;
+        if (tables == null) {
+            subjects = allSubjects;
+            LOGGER.info("Deleting all {} subject(s) from Schema Registry", subjects.size());
+        }
+        else {
+            LOGGER.info("Deleting schemas for {} table(s): {}", tables.size(), tables);
+            Set<String> existing = new HashSet<>(allSubjects);
+            Set<String> matched = new LinkedHashSet<>();
+            List<String> unknown = new ArrayList<>();
+            for (String table : tables) {
+                if (table == null || table.isBlank()) {
+                    sendJson(exchange, 400, new ErrorResponse("Field 'tables' must not contain blank entries"));
+                    return;
+                }
+                List<String> tableSubjects;
+                try {
+                    tableSubjects = List.of(topicNamer.valueSubject(table), topicNamer.keySubject(table));
+                }
+                catch (IllegalArgumentException e) {
+                    sendJson(exchange, 400, new ErrorResponse(e.getMessage()));
+                    return;
+                }
+                // A table without a primary key has no key subject, so a partial match is expected
+                boolean found = false;
+                for (String subject : tableSubjects) {
+                    if (existing.contains(subject)) {
+                        matched.add(subject);
+                        found = true;
+                    }
+                }
+                if (!found) {
+                    unknown.add(table);
+                }
+            }
+            if (!unknown.isEmpty()) {
+                sendJson(exchange, 404, new ErrorResponse(
+                        "No registered schemas found for table(s): " + String.join(", ", unknown)));
+                return;
+            }
+            subjects = matched;
         }
 
         List<RegisteredSchema> deletedSchemas = new ArrayList<>();
@@ -63,6 +136,20 @@ public class DeleteSchemasHandler implements HttpHandler {
 
         LOGGER.info("Deleted {} subject(s) from Schema Registry", deletedSchemas.size());
         sendJson(exchange, 200, new SchemaDeletionResponse(deletedSchemas));
+    }
+
+    /**
+     * Reads the optional request body, returning {@code null} when no body was sent.
+     */
+    private SchemaDeletionRequest readRequest(HttpExchange exchange) throws IOException {
+        byte[] body;
+        try (InputStream in = exchange.getRequestBody()) {
+            body = in == null ? new byte[0] : in.readAllBytes();
+        }
+        if (new String(body, StandardCharsets.UTF_8).isBlank()) {
+            return null;
+        }
+        return objectMapper.readValue(body, SchemaDeletionRequest.class);
     }
 
     private void sendJson(HttpExchange exchange, int statusCode, Object body) throws IOException {

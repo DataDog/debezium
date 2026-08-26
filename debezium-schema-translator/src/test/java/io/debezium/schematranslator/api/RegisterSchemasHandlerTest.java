@@ -11,6 +11,7 @@ import io.debezium.schematranslator.model.RegisteredSchema;
 import io.debezium.schematranslator.schema.AvroSchemaConverter;
 import io.debezium.schematranslator.schema.DebeziumSchemaReader;
 import io.debezium.schematranslator.schema.SchemaRegistryPublisher;
+import io.debezium.schematranslator.schema.TopicNamer;
 import io.debezium.schematranslator.schema.SchemaRegistryPublisher.SchemaIncompatibilityException;
 import io.debezium.spi.topic.TopicNamingStrategy;
 import org.apache.kafka.connect.data.SchemaBuilder;
@@ -298,7 +299,7 @@ class RegisterSchemasHandlerTest {
         TopicNamingStrategy<TableId> strategy = mock(TopicNamingStrategy.class);
         when(strategy.dataChangeTopic(usersId)).thenReturn("test.public.users");
         when(strategy.dataChangeTopic(ordersId)).thenReturn("test.public.orders");
-        when(schemaReader.getTopicNamingStrategy()).thenReturn(strategy);
+        when(schemaReader.getTopicNamer()).thenReturn(new TopicNamer(strategy));
 
         when(avroConverter.toAvro(any()))
                 .thenReturn(org.apache.avro.Schema.create(org.apache.avro.Schema.Type.STRING));
@@ -320,7 +321,7 @@ class RegisterSchemasHandlerTest {
 
         TopicNamingStrategy<TableId> strategy = mock(TopicNamingStrategy.class);
         when(strategy.dataChangeTopic(tableId)).thenReturn("test.public.users");
-        when(schemaReader.getTopicNamingStrategy()).thenReturn(strategy);
+        when(schemaReader.getTopicNamer()).thenReturn(new TopicNamer(strategy));
 
         when(avroConverter.toAvro(any()))
                 .thenReturn(org.apache.avro.Schema.create(org.apache.avro.Schema.Type.STRING));

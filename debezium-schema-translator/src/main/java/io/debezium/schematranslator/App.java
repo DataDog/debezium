@@ -36,7 +36,7 @@ public class App {
         // Start HTTP server
         HttpServer server = HttpServer.create(new InetSocketAddress(config.getHttpPort()), 0);
         RegisterSchemasHandler registerHandler = new RegisterSchemasHandler(schemaReader, avroConverter, publisher);
-        DeleteSchemasHandler deleteHandler = new DeleteSchemasHandler(publisher, config.getTopicPrefix());
+        DeleteSchemasHandler deleteHandler = new DeleteSchemasHandler(publisher, schemaReader.getTopicNamer(), config.getTopicPrefix());
         server.createContext("/api/v1/schema-translator/schemas", exchange -> {
             String method = exchange.getRequestMethod();
             if ("POST".equalsIgnoreCase(method)) {
