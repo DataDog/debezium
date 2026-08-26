@@ -58,6 +58,9 @@ public class TopicNamer {
      * when no schema is specified. Mirrors the logic of {@code PostgresSchema.parse()}.
      */
     public static TableId parseTableId(String table) {
+        if (table == null || table.isBlank()) {
+            throw new IllegalArgumentException("Table name must not be empty");
+        }
         TableId tableId = TableId.parse(table, false);
         if (tableId == null) {
             throw new IllegalArgumentException("Invalid table name: " + table);

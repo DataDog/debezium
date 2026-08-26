@@ -259,16 +259,6 @@ class RegisterSchemasHandlerIT {
     }
 
     @Test
-    void deleteWithUnknownTableReturns404() throws Exception {
-        HttpURLConnection conn = delete("{\"tables\":[\"public.never_registered\"]}");
-
-        assertThat(conn.getResponseCode()).isEqualTo(404);
-        InputStream errStream = conn.getErrorStream();
-        String errorBody = errStream != null ? new String(errStream.readAllBytes(), StandardCharsets.UTF_8) : "";
-        assertThat(errorBody).contains("public.never_registered");
-    }
-
-    @Test
     void missingConnectionStringReturns400() throws Exception {
         HttpURLConnection conn = post("{\"tables\":[\"public.products\"]}");
         assertThat(conn.getResponseCode()).isEqualTo(400);

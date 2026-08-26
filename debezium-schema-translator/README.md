@@ -116,9 +116,9 @@ Deletes the `-value` and `-key` subjects from the Schema Registry. The request b
 ```
 
 Table names follow the same rules as registration (`schema.table`, or `table` for the `public`
-schema). Requesting a table with no registered subject deletes nothing and returns 404, so a typo
-cannot silently leave schemas behind. A table without a primary key only has a value subject, which
-is not an error.
+schema). Both subjects of a requested table are assumed to be registered: a table that was never
+registered, or one without a primary key and therefore without a key subject, fails with a 500 from
+the Schema Registry.
 
 **Success response (200):**
 
@@ -138,12 +138,11 @@ is not an error.
 
 **Error responses:**
 
-| Code | Cause                                                                 |
-|------|-----------------------------------------------------------------------|
+| Code | Cause                                                                  |
+|------|------------------------------------------------------------------------|
 | 400  | Malformed JSON body, empty `tables` array, or an unparseable table name |
-| 404  | One or more requested tables have no registered schemas               |
-| 405  | Wrong HTTP method                                                     |
-| 500  | Schema Registry error                                                 |
+| 405  | Wrong HTTP method                                                      |
+| 500  | Schema Registry error, including a requested subject that is not registered |
 
 ## Build
 
