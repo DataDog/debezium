@@ -14,7 +14,6 @@ import io.debezium.relational.TableSchema;
 import io.debezium.relational.TableSchemaBuilder;
 import io.debezium.relational.Tables;
 import io.debezium.schema.SchemaNameAdjuster;
-import io.debezium.spi.topic.TopicNamingStrategy;
 import org.apache.kafka.connect.data.Schema;
 
 import java.net.URI;
@@ -43,14 +42,15 @@ public class DebeziumSchemaReader {
     private static final int DEFAULT_PG_PORT = 5432;
 
     private final PostgresConnectorConfig connectorConfig;
-    private final TopicNamingStrategy<TableId> topicNamingStrategy;
+    private final TopicNamer topicNamer;
     private final SchemaNameAdjuster schemaNameAdjuster;
     private final Schema sourceInfoSchema;
 
     @SuppressWarnings("unchecked")
     public DebeziumSchemaReader(String topicPrefix) {
         this.connectorConfig = new PostgresConnectorConfig(staticConfig(topicPrefix));
-        this.topicNamingStrategy = connectorConfig.getTopicNamingStrategy(PostgresConnectorConfig.TOPIC_NAMING_STRATEGY);
+        this.topicNamer = new TopicNamer(
+                connectorConfig.getTopicNamingStrategy(PostgresConnectorConfig.TOPIC_NAMING_STRATEGY));
         this.schemaNameAdjuster = connectorConfig.schemaNameAdjuster();
         this.sourceInfoSchema = connectorConfig.getSourceInfoStructMaker().schema();
     }
@@ -68,7 +68,7 @@ public class DebeziumSchemaReader {
         JdbcConfiguration jdbcConfig = parseJdbcConfig(connectionString);
 
         List<TableId> requestedIds = tableNames.stream()
-                .map(DebeziumSchemaReader::parseTableId)
+                .map(TopicNamer::parseTableId)
                 .toList();
         Set<TableId> requestedSet = Set.copyOf(requestedIds);
         Tables.TableFilter filter = Tables.TableFilter.fromPredicate(requestedSet::contains);
@@ -99,7 +99,7 @@ public class DebeziumSchemaReader {
                     throw new RuntimeException("Table not found: " + tableId);
                 }
                 TableSchema tableSchema = tableSchemaBuilder.create(
-                        topicNamingStrategy, table, null, null, null);
+                        topicNamer.strategy(), table, null, null, null);
                 result.put(tableId, tableSchema);
             }
             return result;
@@ -191,21 +191,7 @@ public class DebeziumSchemaReader {
                 .build();
     }
 
-    /**
-     * Parses a table name string into a {@link TableId}, defaulting the schema to {@code "public"}
-     * when no schema is specified. Mirrors the logic of {@code PostgresSchema.parse()}.
-     */
-    private static TableId parseTableId(String table) {
-        TableId tableId = TableId.parse(table, false);
-        if (tableId == null) {
-            throw new IllegalArgumentException("Invalid table name: " + table);
-        }
-        return tableId.schema() == null
-                ? new TableId(tableId.catalog(), "public", tableId.table())
-                : tableId;
-    }
-
-    public TopicNamingStrategy<TableId> getTopicNamingStrategy() {
-        return topicNamingStrategy;
+    public TopicNamer getTopicNamer() {
+        return topicNamer;
     }
 }

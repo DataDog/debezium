@@ -97,6 +97,53 @@ When omitted, the SSL mode defaults to `prefer`.
 
 Registration is idempotent: registering an identical schema multiple times returns the same schema ID and version.
 
+### Delete schemas
+
+```
+DELETE /api/v1/schema-translator/schemas
+```
+
+Deletes the `-value` and `-key` subjects from the Schema Registry. The request body is optional.
+
+**Without a body (or without a `tables` field)** every subject in the registry is deleted.
+
+**With a body**, only the listed tables are deleted:
+
+```json
+{
+  "tables": ["public.users", "orders"]
+}
+```
+
+Table names follow the same rules as registration (`schema.table`, or `table` for the `public`
+schema). Both subjects of a requested table are assumed to be registered: a table that was never
+registered, or one without a primary key and therefore without a key subject, fails with a 500 from
+the Schema Registry.
+
+**Success response (200):**
+
+```json
+{
+  "deleted_schemas": [
+    {
+      "table": "public.users",
+      "subject": "test.public.users-value",
+      "schema_id": 1,
+      "version": 1
+    }
+  ],
+  "deleted_count": 1
+}
+```
+
+**Error responses:**
+
+| Code | Cause                                                                  |
+|------|------------------------------------------------------------------------|
+| 400  | Malformed JSON body, empty `tables` array, or an unparseable table name |
+| 405  | Wrong HTTP method                                                      |
+| 500  | Schema Registry error, including a requested subject that is not registered |
+
 ## Build
 
 ```bash
@@ -136,4 +183,9 @@ curl -s -X POST http://localhost:8080/api/v1/schema-translator/schemas \
 
 # Inspect registered subjects in Schema Registry
 curl -s http://localhost:8081/subjects
+
+# Delete the schemas of a single table (omit the body to delete every subject)
+curl -s -X DELETE http://localhost:8080/api/v1/schema-translator/schemas \
+  -H 'Content-Type: application/json' \
+  -d '{"tables": ["public.my_table"]}'
 ```
