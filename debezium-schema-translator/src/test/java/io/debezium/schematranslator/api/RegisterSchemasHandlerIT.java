@@ -82,7 +82,7 @@ class RegisterSchemasHandlerIT {
             publisher.deleteSubject(subject, "test");
         }
         RegisterSchemasHandler registerHandler = new RegisterSchemasHandler(reader, new AvroSchemaConverter(), publisher);
-        DeleteSchemasHandler deleteHandler = new DeleteSchemasHandler(publisher, "test");
+        DeleteSchemasHandler deleteHandler = new DeleteSchemasHandler(publisher, reader.getTopicNamer(), "test");
 
         handlerServer = HttpServer.create(new InetSocketAddress(0), 0);
         handlerServer.createContext("/api/v1/schema-translator/schemas", exchange -> {
@@ -225,6 +225,40 @@ class RegisterSchemasHandlerIT {
     }
 
     @Test
+    void deleteWithTablesOnlyDeletesRequestedTables() throws Exception {
+        execute("CREATE TABLE IF NOT EXISTS public.delete_only_me (" +
+                "  id SERIAL PRIMARY KEY," +
+                "  label TEXT NOT NULL" +
+                ")");
+        execute("CREATE TABLE IF NOT EXISTS public.delete_keep_me (" +
+                "  id SERIAL PRIMARY KEY," +
+                "  label TEXT NOT NULL" +
+                ")");
+
+        HttpURLConnection postConn = post(registerBody("public.delete_only_me"));
+        assertThat(postConn.getResponseCode()).isEqualTo(200);
+        postConn.getInputStream().readAllBytes(); // drain
+        HttpURLConnection keepConn = post(registerBody("public.delete_keep_me"));
+        assertThat(keepConn.getResponseCode()).isEqualTo(200);
+        keepConn.getInputStream().readAllBytes(); // drain
+
+        HttpURLConnection deleteConn = delete("{\"tables\":[\"delete_only_me\"]}");
+        String body = new String(deleteConn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+
+        assertThat(deleteConn.getResponseCode()).isEqualTo(200);
+        JsonNode json = new ObjectMapper().readTree(body);
+        assertThat(json.get("deleted_count").asInt()).isEqualTo(2);
+        assertThat(body).contains("test.public.delete_only_me-value", "test.public.delete_only_me-key");
+
+        // The untouched table's subjects are still registered
+        HttpURLConnection deleteRest = delete();
+        JsonNode restJson = new ObjectMapper().readTree(
+                new String(deleteRest.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+        assertThat(restJson.get("deleted_count").asInt()).isEqualTo(2);
+        assertThat(restJson.toString()).contains("test.public.delete_keep_me-value");
+    }
+
+    @Test
     void missingConnectionStringReturns400() throws Exception {
         HttpURLConnection conn = post("{\"tables\":[\"public.products\"]}");
         assertThat(conn.getResponseCode()).isEqualTo(400);
@@ -262,6 +296,19 @@ class RegisterSchemasHandlerIT {
                 + "/api/v1/schema-translator/schemas");
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("DELETE");
+        return conn;
+    }
+
+    private HttpURLConnection delete(String jsonBody) throws Exception {
+        URL url = new URL("http://localhost:" + handlerPort
+                + "/api/v1/schema-translator/schemas");
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("DELETE");
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setDoOutput(true);
+        byte[] bytes = jsonBody.getBytes(StandardCharsets.UTF_8);
+        conn.getOutputStream().write(bytes);
+        conn.getOutputStream().flush();
         return conn;
     }
 

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import io.debezium.schematranslator.model.RegisteredSchema;
+import io.debezium.schematranslator.schema.DebeziumSchemaReader;
 import io.debezium.schematranslator.schema.SchemaRegistryPublisher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -19,6 +21,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
@@ -34,7 +37,7 @@ class DeleteSchemasHandlerTest {
 
     @BeforeEach
     void setUp() {
-        handler = new DeleteSchemasHandler(publisher, "test");
+        handler = new DeleteSchemasHandler(publisher, new DebeziumSchemaReader("test").getTopicNamer(), "test");
     }
 
     @Test
@@ -54,9 +57,7 @@ class DeleteSchemasHandlerTest {
         handler.handle(exchange);
 
         verify(exchange).sendResponseHeaders(eq(500), anyLong());
-        JsonNode response = objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
-        assertThat(response.get("error").get("message").asText())
-                .isEqualTo("Could not connect to the Schema Registry");
+        assertThat(errorMessage()).isEqualTo("Could not connect to the Schema Registry");
     }
 
     @Test
@@ -69,9 +70,7 @@ class DeleteSchemasHandlerTest {
         handler.handle(exchange);
 
         verify(exchange).sendResponseHeaders(eq(500), anyLong());
-        JsonNode response = objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
-        assertThat(response.get("error").get("message").asText())
-                .isEqualTo("Failed to delete schemas from schema registry");
+        assertThat(errorMessage()).isEqualTo("Failed to delete schemas from schema registry");
     }
 
     @Test
@@ -87,7 +86,7 @@ class DeleteSchemasHandlerTest {
         handler.handle(exchange);
 
         verify(exchange).sendResponseHeaders(eq(200), anyLong());
-        JsonNode response = objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
+        JsonNode response = responseJson();
         assertThat(response.get("deleted_count").asInt()).isEqualTo(2);
         assertThat(response.get("deleted_schemas")).hasSize(2);
         JsonNode first = response.get("deleted_schemas").get(0);
@@ -110,15 +109,122 @@ class DeleteSchemasHandlerTest {
         handler.handle(exchange);
 
         verify(exchange).sendResponseHeaders(eq(200), anyLong());
-        JsonNode response = objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
+        JsonNode response = responseJson();
         assertThat(response.get("deleted_count").asInt()).isEqualTo(0);
         assertThat(response.get("deleted_schemas")).hasSize(0);
     }
 
+    @Test
+    void bodyWithoutTablesDeletesEverything() throws Exception {
+        HttpExchange exchange = mockExchange("DELETE", "{\"connection_string\":\"postgresql://x/y\"}");
+        when(publisher.getAllSubjects()).thenReturn(List.of("test.public.users-value"));
+        when(publisher.deleteSubject("test.public.users-value", "test"))
+                .thenReturn(new RegisteredSchema("public.users", "test.public.users-value", 1, 1));
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(200), anyLong());
+        assertThat(responseJson().get("deleted_count").asInt()).isEqualTo(1);
+    }
+
+    @Test
+    void requestedTablesDeleteOnlyTheirSubjects() throws Exception {
+        HttpExchange exchange = mockExchange("DELETE", "{\"tables\":[\"public.users\",\"events\"]}");
+        stubDelete("test.public.users-value", "public.users", 1);
+        stubDelete("test.public.users-key", "public.users", 2);
+        stubDelete("test.public.events-value", "public.events", 3);
+        stubDelete("test.public.events-key", "public.events", 4);
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(200), anyLong());
+        assertThat(responseJson().get("deleted_count").asInt()).isEqualTo(4);
+        // Targeted deletes derive subjects from the table names, no registry listing needed
+        verify(publisher, never()).getAllSubjects();
+        verify(publisher, never()).deleteSubject(eq("test.public.orders-value"), anyString());
+    }
+
+    @Test
+    void qualifiedAndUnqualifiedNamesOfTheSameTableDeleteOnce() throws Exception {
+        HttpExchange exchange = mockExchange("DELETE", "{\"tables\":[\"users\",\"public.users\"]}");
+        stubDelete("test.public.users-value", "public.users", 1);
+        stubDelete("test.public.users-key", "public.users", 2);
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(200), anyLong());
+        assertThat(responseJson().get("deleted_count").asInt()).isEqualTo(2);
+        verify(publisher, times(1)).deleteSubject("test.public.users-value", "test");
+        verify(publisher, times(1)).deleteSubject("test.public.users-key", "test");
+    }
+
+    @Test
+    void emptyTablesListReturns400() throws Exception {
+        HttpExchange exchange = mockExchange("DELETE", "{\"tables\":[]}");
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(400), anyLong());
+        assertThat(errorMessage()).isEqualTo("Field 'tables' must contain at least one entry when provided");
+        verify(publisher, never()).getAllSubjects();
+    }
+
+    @Test
+    void blankTableEntryReturns400() throws Exception {
+        HttpExchange exchange = mockExchange("DELETE", "{\"tables\":[\"  \"]}");
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(400), anyLong());
+        assertThat(errorMessage()).isEqualTo("Table name must not be empty");
+        verify(publisher, never()).deleteSubject(anyString(), anyString());
+    }
+
+    @Test
+    void nullTableEntryReturns400() throws Exception {
+        HttpExchange exchange = mockExchange("DELETE", "{\"tables\":[null]}");
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(400), anyLong());
+        assertThat(errorMessage()).isEqualTo("Table name must not be empty");
+        verify(publisher, never()).deleteSubject(anyString(), anyString());
+    }
+
+    @Test
+    void malformedBodyReturns400() throws Exception {
+        HttpExchange exchange = mockExchange("DELETE", "{\"tables\":");
+
+        handler.handle(exchange);
+
+        verify(exchange).sendResponseHeaders(eq(400), anyLong());
+        assertThat(errorMessage()).startsWith("Invalid JSON request body:");
+        verify(publisher, never()).getAllSubjects();
+    }
+
+    private void stubDelete(String subject, String table, int schemaId) throws IOException {
+        when(publisher.deleteSubject(subject, "test"))
+                .thenReturn(new RegisteredSchema(table, subject, schemaId, 1));
+    }
+
+    private JsonNode responseJson() throws IOException {
+        return objectMapper.readTree(responseBody.toString(StandardCharsets.UTF_8));
+    }
+
+    private String errorMessage() throws IOException {
+        return responseJson().get("error").get("message").asText();
+    }
+
     private HttpExchange mockExchange(String method) throws IOException {
+        return mockExchange(method, "");
+    }
+
+    private HttpExchange mockExchange(String method, String requestBody) throws IOException {
         HttpExchange exchange = mock(HttpExchange.class);
         when(exchange.getRequestMethod()).thenReturn(method);
         when(exchange.getResponseHeaders()).thenReturn(new Headers());
+        lenient().when(exchange.getRequestBody())
+                .thenReturn(new ByteArrayInputStream(requestBody.getBytes(StandardCharsets.UTF_8)));
         responseBody = new ByteArrayOutputStream();
         when(exchange.getResponseBody()).thenReturn(responseBody);
         return exchange;
