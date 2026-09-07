@@ -58,4 +58,59 @@ public class SnapshotMeterTest {
         assertThat(meter.getTotalTableCount()).isEqualTo(2);
         assertThat(meter.getCapturedTables()).containsExactlyInAnyOrder(TABLE_A.identifier(), TABLE_B.identifier());
     }
+
+    @Test
+    public void totalRowsToScanIsEmptyOnNewMeter() {
+        assertThat(meter.getTotalRowsToScan()).isEmpty();
+    }
+
+    @Test
+    public void totalRowsToScanTracksEstimatePerTable() {
+        meter.totalRowsToScan(TABLE_A, 1000L);
+        meter.totalRowsToScan(TABLE_B, 500L);
+
+        assertThat(meter.getTotalRowsToScan())
+                .containsEntry(TABLE_A.toString(), 1000L)
+                .containsEntry(TABLE_B.toString(), 500L);
+    }
+
+    @Test
+    public void totalRowsToScanOverwritesExistingEstimateForSameTable() {
+        meter.totalRowsToScan(TABLE_A, 1000L);
+        meter.totalRowsToScan(TABLE_A, 2000L);
+
+        assertThat(meter.getTotalRowsToScan())
+                .hasSize(1)
+                .containsEntry(TABLE_A.toString(), 2000L);
+    }
+
+    @Test
+    public void resetClearsTotalRowsToScan() {
+        meter.totalRowsToScan(TABLE_A, 1000L);
+
+        meter.reset();
+
+        assertThat(meter.getTotalRowsToScan()).isEmpty();
+    }
+
+    @Test
+    public void totalRowsToScanCanBeReconciledToActualCount() {
+        meter.totalRowsToScan(TABLE_A, 1000L);
+        // Snapshot finishes with 950 actual rows; reconcile so metric reaches 100%.
+        meter.totalRowsToScan(TABLE_A, 950L);
+
+        assertThat(meter.getTotalRowsToScan())
+                .containsEntry(TABLE_A.toString(), 950L);
+    }
+
+    @Test
+    public void resetClearsTotalRowsToScanAlongsideRowsScanned() {
+        meter.rowsScanned(TABLE_A, 500L);
+        meter.totalRowsToScan(TABLE_A, 1000L);
+
+        meter.reset();
+
+        assertThat(meter.getRowsScanned()).isEmpty();
+        assertThat(meter.getTotalRowsToScan()).isEmpty();
+    }
 }
