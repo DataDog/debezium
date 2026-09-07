@@ -8,6 +8,7 @@ package io.debezium.connector.oracle;
 import java.sql.SQLException;
 import java.sql.Savepoint;
 import java.sql.Statement;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.Collection;
@@ -24,8 +25,8 @@ import org.apache.kafka.connect.errors.ConnectException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import io.debezium.connector.oracle.jdbc.OracleConnectionFactory;
 import io.debezium.jdbc.JdbcConnection;
-import io.debezium.jdbc.MainConnectionProvidingConnectionFactory;
 import io.debezium.pipeline.EventDispatcher;
 import io.debezium.pipeline.notification.NotificationService;
 import io.debezium.pipeline.source.SnapshottingTask;
@@ -38,6 +39,7 @@ import io.debezium.relational.Tables;
 import io.debezium.schema.SchemaChangeEvent;
 import io.debezium.snapshot.SnapshotterService;
 import io.debezium.util.Clock;
+import io.debezium.util.Metronome;
 import io.debezium.util.Strings;
 
 /**
@@ -53,7 +55,7 @@ public class OracleSnapshotChangeEventSource extends RelationalSnapshotChangeEve
     private final OracleConnection jdbcConnection;
     private final OracleDatabaseSchema databaseSchema;
 
-    public OracleSnapshotChangeEventSource(OracleConnectorConfig connectorConfig, MainConnectionProvidingConnectionFactory<OracleConnection> connectionFactory,
+    public OracleSnapshotChangeEventSource(OracleConnectorConfig connectorConfig, OracleConnectionFactory connectionFactory,
                                            OracleDatabaseSchema schema, EventDispatcher<OraclePartition, TableId> dispatcher, Clock clock,
                                            SnapshotProgressListener<OraclePartition> snapshotProgressListener,
                                            NotificationService<OraclePartition, OracleOffsetContext> notificationService, SnapshotterService snapshotterService) {
@@ -241,6 +243,14 @@ public class OracleSnapshotChangeEventSource extends RelationalSnapshotChangeEve
     }
 
     @Override
+    protected Long rowCountForTableChunked(TableId tableId) throws SQLException {
+        // Oracle TableIds carry a CDB/PDB catalog that cannot appear in a qualified name; strip it
+        // before quoting (as getSnapshotSelect does), otherwise the shared implementation would emit
+        // an invalid "catalog"."schema"."table".
+        return jdbcConnection.getRowCount(new TableId(null, tableId.schema(), tableId.table()));
+    }
+
+    @Override
     protected List<Pattern> getSignalDataCollectionPattern(String signalingDataCollection) {
         // Oracle expects this value to be supplied using "<database>.<schema>.<table>"; however the
         // TableIdMapper used by the connector uses only "<schema>.<table>". This primarily targets
@@ -289,6 +299,8 @@ public class OracleSnapshotChangeEventSource extends RelationalSnapshotChangeEve
             OracleOffsetContext offset = offsets.poll();
             try {
                 final int maxRetries = getTableSnapshotMaxRetries();
+                final Metronome retrySleeper = Metronome.sleeper(Duration.ofSeconds(5), clock);
+
                 for (int i = 0; i <= maxRetries; i++) {
                     try {
                         doCreateDataEventsForTable(sourceContext, snapshotContext, offset, snapshotReceiver, table, firstTable,
@@ -304,6 +316,7 @@ public class OracleSnapshotChangeEventSource extends RelationalSnapshotChangeEve
                             if ((i + 1) <= maxRetries) {
                                 LOGGER.warn("Table {} snapshot failed: {}, attempting to retry ({} of {})",
                                         table.id(), e.getMessage(), i, getTableSnapshotMaxRetries());
+                                retrySleeper.pause();
                                 continue;
                             }
                         }

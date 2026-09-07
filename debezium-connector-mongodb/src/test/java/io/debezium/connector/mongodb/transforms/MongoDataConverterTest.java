@@ -23,8 +23,8 @@ import org.apache.kafka.connect.data.Timestamp;
 import org.bson.BsonDocument;
 import org.bson.BsonType;
 import org.bson.BsonValue;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import io.debezium.connector.mongodb.transforms.ExtractNewDocumentState.ArrayEncoding;
 import io.debezium.doc.FixFor;
@@ -41,8 +41,8 @@ public class MongoDataConverterTest {
     private SchemaBuilder builder;
     private MongoDataConverter converter;
 
-    @Before
-    public void setup() throws Exception {
+    @BeforeEach
+    void setup() throws Exception {
         record = getFile("restaurants5.json");
         val = BsonDocument.parse(record);
         builder = SchemaBuilder.struct().name("pub");
@@ -50,7 +50,7 @@ public class MongoDataConverterTest {
     }
 
     @Test
-    public void shouldCreateCorrectStructFromInsertJson() {
+    void shouldCreateCorrectStructFromInsertJson() {
         Map<String, Map<Object, BsonType>> entry = converter.parseBsonDocument(val);
         converter.buildSchema(entry, builder);
 
@@ -88,7 +88,7 @@ public class MongoDataConverterTest {
     }
 
     @Test
-    public void shouldCreateCorrectSchemaFromInsertJson() {
+    void shouldCreateCorrectSchemaFromInsertJson() {
         Map<String, Map<Object, BsonType>> entry = converter.parseBsonDocument(val);
         converter.buildSchema(entry, builder);
 
@@ -123,8 +123,8 @@ public class MongoDataConverterTest {
                 .build());
     }
 
-    private String getFile(String fileName) throws IOException, URISyntaxException {
-        URL jsonResource = getClass().getClassLoader().getResource(fileName);
+    private String getFile(final String fileName) throws IOException, URISyntaxException {
+        final URL jsonResource = getClass().getClassLoader().getResource(fileName);
         return new String(
                 Files.readAllBytes(Paths.get(jsonResource.toURI())),
                 StandardCharsets.UTF_8);
@@ -206,5 +206,91 @@ public class MongoDataConverterTest {
                         + "}"
                         + "}");
 
+    }
+
+    @Test
+    @FixFor("DBZ-1392")
+    public void shouldProcessHeterogeneousArrayWithEmptyNestedDocument() {
+        val = BsonDocument.parse("{\n" +
+                "    \"_id\" : ObjectId(\"66bf4a1c2f8e3b4d5a7c9e12\"),\n" +
+                "    \"users\" : [\n" +
+                "        {\"name\" : \"John\", \"age\" : 30, \"address\" : {\"street\" : \"123 Main St\", \"city\" : \"NYC\"}},\n" +
+                "        {\"name\" : \"Jane\", \"email\" : \"jane@example.com\", \"address\" : {}},\n" +
+                "        {\"name\" : \"Bob\", \"age\" : 25, \"phone\" : \"555-1234\"}\n" +
+                "    ]\n" +
+                "}");
+        builder = SchemaBuilder.struct().name("heterogeneous");
+        converter = new MongoDataConverter(ArrayEncoding.DOCUMENT);
+
+        Map<String, Map<Object, BsonType>> entry = converter.parseBsonDocument(val);
+        converter.buildSchema(entry, builder);
+
+        final Schema finalSchema = builder.build();
+        final Struct struct = new Struct(finalSchema);
+        for (Map.Entry<String, BsonValue> bsonValueEntry : val.entrySet()) {
+            converter.buildStruct(bsonValueEntry, finalSchema, struct);
+        }
+
+        // The schema name for array elements will be the parent field name plus index (e.g., users._0)
+        assertThat(finalSchema.field("users")).isNotNull();
+
+        // Verify struct was built successfully and contains the expected data
+        // For heterogeneous arrays in DOCUMENT mode, elements are indexed as _0, _1, _2...
+        assertThat(struct.getStruct("users")).isNotNull();
+        Struct usersStruct = struct.getStruct("users");
+
+        assertThat(usersStruct.getStruct("_0").get("name")).isEqualTo("John");
+        assertThat(usersStruct.getStruct("_1").get("email")).isEqualTo("jane@example.com");
+        assertThat(usersStruct.getStruct("_2").get("age")).isEqualTo(25);
+
+        // This ensures the empty address document didn't cause a crash and was handled
+        assertThat(usersStruct.getStruct("_1").getStruct("address")).isNotNull();
+        assertThat(usersStruct.getStruct("_1").getStruct("address").schema().fields()).isEmpty();
+    }
+
+    @Test
+    @FixFor("debezium/dbz#1901")
+    public void shouldHandleIdenticalArrayElementsWithDocumentEncoding() {
+        val = BsonDocument.parse("""
+                {
+                    "_id": {"$oid": "6a24288af2e947561dd394aa"},
+                    "items": [
+                        {
+                            "title": "Product",
+                            "image": "dummy img",
+                            "price": 899,
+                            "qty": 2
+                        },
+                        {
+                            "title": "Product",
+                            "image": "dummy img",
+                            "price": 899,
+                            "qty": 2
+                        }
+                    ]
+                }
+                """);
+
+        builder = SchemaBuilder.struct().name("test");
+        converter = new MongoDataConverter(ArrayEncoding.DOCUMENT);
+
+        final Map<String, Map<Object, BsonType>> schemaMap = converter.parseBsonDocument(val);
+        converter.buildSchema(schemaMap, builder);
+
+        final Schema finalSchema = builder.build();
+        final Struct struct = new Struct(finalSchema);
+
+        for (final Map.Entry<String, BsonValue> entry : val.entrySet()) {
+            converter.buildStruct(entry, finalSchema, struct);
+        }
+
+        final Struct itemsStruct = struct.getStruct("items");
+        assertThat(itemsStruct).isNotNull();
+        assertThat(itemsStruct.getStruct("_0")).isNotNull();
+        assertThat(itemsStruct.getStruct("_1")).isNotNull();
+        assertThat(itemsStruct.getStruct("_0").get("title")).isEqualTo("Product");
+        assertThat(itemsStruct.getStruct("_0").get("price")).isEqualTo(899);
+        assertThat(itemsStruct.getStruct("_1").get("title")).isEqualTo("Product");
+        assertThat(itemsStruct.getStruct("_1").get("price")).isEqualTo(899);
     }
 }

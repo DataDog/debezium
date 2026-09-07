@@ -5,11 +5,17 @@
  */
 package io.debezium.connector.jdbc;
 
+import static io.debezium.config.ConfigurationNames.TASK_ID_PROPERTY_NAME;
+import static io.debezium.openlineage.dataset.DatasetMetadata.STREAM_DATASET_TYPE;
+import static io.debezium.openlineage.dataset.DatasetMetadata.DataStore.KAFKA;
+import static io.debezium.openlineage.dataset.DatasetMetadata.DatasetKind.INPUT;
+
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
@@ -30,8 +36,16 @@ import org.slf4j.LoggerFactory;
 
 import io.debezium.DebeziumException;
 import io.debezium.annotation.VisibleForTesting;
+import io.debezium.config.Configuration;
+import io.debezium.config.ConfigurationNames;
+import io.debezium.connector.common.DebeziumTaskState;
+import io.debezium.connector.common.UUIDUtils;
 import io.debezium.connector.jdbc.dialect.DatabaseDialect;
 import io.debezium.connector.jdbc.dialect.DatabaseDialectResolver;
+import io.debezium.openlineage.ConnectorContext;
+import io.debezium.openlineage.DebeziumOpenLineageEmitter;
+import io.debezium.openlineage.dataset.DatasetDataExtractor;
+import io.debezium.openlineage.dataset.DatasetMetadata;
 import io.debezium.util.Stopwatch;
 import io.debezium.util.Strings;
 
@@ -46,8 +60,10 @@ public class JdbcSinkConnectorTask extends SinkTask {
     private static final Logger LOGGER = LoggerFactory.getLogger(JdbcSinkConnectorTask.class);
 
     private static final Class[] EMPTY_CLASS_ARRAY = new Class[0];
+    private static final DatasetDataExtractor DATASET_DATA_EXTRACTOR = new DatasetDataExtractor();
 
     private SessionFactory sessionFactory;
+    private ConnectorContext connectorContext;
 
     private enum State {
         RUNNING,
@@ -73,6 +89,7 @@ public class JdbcSinkConnectorTask extends SinkTask {
         try {
             pre380OriginalRecordMethod = InternalSinkRecord.class.getMethod("originalRecord", EMPTY_CLASS_ARRAY);
             usePre380OriginalRecordAccess = true;
+
             LOGGER.info("Old InternalSinkRecord class found, will use reflection for calls");
         }
         catch (NoSuchMethodException | SecurityException e) {
@@ -90,24 +107,34 @@ public class JdbcSinkConnectorTask extends SinkTask {
         stateLock.lock();
 
         try {
+            final JdbcSinkConnectorConfig config = new JdbcSinkConnectorConfig(props);
+            String connectorName = props.get(ConfigurationNames.CONNECTOR_NAME_PROPERTY);
+            String taskId = props.getOrDefault(TASK_ID_PROPERTY_NAME, "0");
+            connectorContext = new ConnectorContext(connectorName, Module.name(), taskId, Module.version(), UUIDUtils.generateNewUUID(),
+                    getMaskedConfigurationMap(props));
+
             if (!state.compareAndSet(State.STOPPED, State.RUNNING)) {
                 LOGGER.info("Connector has already been started");
                 return;
             }
 
+            DebeziumOpenLineageEmitter.emit(connectorContext, DebeziumTaskState.INITIAL);
+
             // be sure to reset this state
             previousPutException = null;
 
-            final JdbcSinkConnectorConfig config = new JdbcSinkConnectorConfig(props);
             config.validate();
 
             sessionFactory = config.getHibernateConfiguration().buildSessionFactory();
             StatelessSession session = sessionFactory.openStatelessSession();
-            DatabaseDialect databaseDialect = DatabaseDialectResolver.resolve(config, sessionFactory);
+            DatabaseDialect dialect = DatabaseDialectResolver.resolve(config, sessionFactory);
             QueryBinderResolver queryBinderResolver = new QueryBinderResolver();
-            RecordWriter recordWriter = new RecordWriter(session, queryBinderResolver, config, databaseDialect);
 
-            changeEventSink = new JdbcChangeEventSink(config, session, databaseDialect, recordWriter);
+            // Instantiate the appropriate RecordWriter based on dialect and configuration
+            RecordWriter recordWriter = createRecordWriter(session, queryBinderResolver, config, dialect);
+
+            changeEventSink = new JdbcChangeEventSink(config, session, dialect, recordWriter, connectorContext);
+            DebeziumOpenLineageEmitter.emit(connectorContext, DebeziumTaskState.RUNNING);
         }
         finally {
             stateLock.unlock();
@@ -122,10 +149,16 @@ public class JdbcSinkConnectorTask extends SinkTask {
         putStopWatch.start();
         if (previousPutException != null) {
             LOGGER.error("JDBC sink connector failure", previousPutException);
+
+            DebeziumOpenLineageEmitter.emit(connectorContext, DebeziumTaskState.RESTARTING, previousPutException);
+
             throw new ConnectException("JDBC sink connector failure", previousPutException);
         }
 
         LOGGER.debug("Received {} changes.", records.size());
+
+        records.forEach(record -> DebeziumOpenLineageEmitter.emit(connectorContext, DebeziumTaskState.RUNNING,
+                List.of(new DatasetMetadata(record.topic(), INPUT, STREAM_DATASET_TYPE, KAFKA, DATASET_DATA_EXTRACTOR.extract(record)))));
 
         try {
             executeStopWatch.start();
@@ -149,6 +182,24 @@ public class JdbcSinkConnectorTask extends SinkTask {
         LOGGER.trace("[PERF] Total put execution time {}", putStopWatch.durations());
         LOGGER.trace("[PERF] Sink execute execution time {}", executeStopWatch.durations());
         LOGGER.trace("[PERF] Mark processed execution time {}", markProcessedStopWatch.durations());
+    }
+
+    /**
+     * Creates the appropriate RecordWriter based on dialect and configuration.
+     * If PostgreSQL UNNEST optimization is enabled, returns UnnestRecordWriter;
+     * otherwise returns StandardRecordWriter.
+     */
+    private RecordWriter createRecordWriter(StatelessSession session, QueryBinderResolver queryBinderResolver,
+                                            JdbcSinkConnectorConfig config, DatabaseDialect databaseDialect) {
+        // Use UNNEST writer when explicitly enabled (opt-in)
+        // This allows any PostgreSQL-compatible dialect to use UNNEST without code changes
+        if (config.isPostgresUnnestInsertEnabled()) {
+            LOGGER.info("Using UnnestRecordWriter for UNNEST optimization");
+            return new UnnestRecordWriter(session, queryBinderResolver, config, databaseDialect);
+        }
+
+        LOGGER.info("Using DefaultRecordWriter for standard JDBC batching");
+        return new DefaultRecordWriter(session, queryBinderResolver, config, databaseDialect);
     }
 
     @Override
@@ -192,11 +243,10 @@ public class JdbcSinkConnectorTask extends SinkTask {
     public void stop() {
         stateLock.lock();
         try {
-
             if (changeEventSink != null) {
+                changeEventSink.close();
                 try {
-                    changeEventSink.close();
-
+                    DebeziumOpenLineageEmitter.emit(connectorContext, DebeziumTaskState.STOPPED);
                     if (sessionFactory != null && sessionFactory.isOpen()) {
                         LOGGER.info("Closing the session factory");
                         sessionFactory.close();
@@ -218,12 +268,17 @@ public class JdbcSinkConnectorTask extends SinkTask {
                 changeEventSink = null;
             }
             stateLock.unlock();
+            DebeziumOpenLineageEmitter.cleanup(connectorContext);
         }
     }
 
     @VisibleForTesting
     public Throwable getLastProcessingException() {
         return previousPutException;
+    }
+
+    private Map<String, String> getMaskedConfigurationMap(Map<String, String> props) {
+        return Configuration.from(props).withMaskedPasswords().asMap();
     }
 
     /**

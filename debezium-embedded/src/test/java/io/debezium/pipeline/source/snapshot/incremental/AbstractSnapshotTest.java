@@ -97,8 +97,12 @@ public abstract class AbstractSnapshotTest<T extends SourceConnector> extends Ab
     }
 
     protected void populateTable(JdbcConnection connection, String tableName) throws SQLException {
+        populateTable(connection, tableName, ROW_COUNT);
+    }
+
+    protected void populateTable(JdbcConnection connection, String tableName, int count) throws SQLException {
         connection.setAutoCommit(false);
-        for (int i = 0; i < ROW_COUNT; i++) {
+        for (int i = 0; i < count; i++) {
             connection.executeWithoutCommitting(String.format("INSERT INTO %s (%s, aa) VALUES (%s, %s)",
                     tableName, connection.quoteIdentifier(pkFieldName()), i + 1, i));
         }
@@ -118,6 +122,12 @@ public abstract class AbstractSnapshotTest<T extends SourceConnector> extends Ab
     protected void populateTable() throws SQLException {
         try (JdbcConnection connection = databaseConnection()) {
             populateTable(connection);
+        }
+    }
+
+    protected void populateTable(int count) throws SQLException {
+        try (JdbcConnection connection = databaseConnection()) {
+            populateTable(connection, tableName(), count);
         }
     }
 
@@ -381,20 +391,28 @@ public abstract class AbstractSnapshotTest<T extends SourceConnector> extends Ab
     protected void sendAdHocSnapshotSignalWithAdditionalConditionsWithSurrogateKey(Map<String, String> additionalConditions, String surrogateKey,
                                                                                    AbstractSnapshotSignal.SnapshotType snapshotType,
                                                                                    String... dataCollectionIds) {
+        sendAdHocSnapshotSignalWithAdditionalConditionsWithSurrogateKey(
+                !additionalConditions.isEmpty() ? buildAdditionalConditions(additionalConditions) : null,
+                surrogateKey, snapshotType, dataCollectionIds);
+    }
+
+    protected void sendAdHocSnapshotSignalWithAdditionalConditionsWithSurrogateKey(String additionalConditions, String surrogateKey,
+                                                                                   AbstractSnapshotSignal.SnapshotType snapshotType,
+                                                                                   String... dataCollectionIds) {
         final String dataCollectionIdsList = Arrays.stream(dataCollectionIds)
                 .map(x -> '"' + x + '"')
                 .collect(Collectors.joining(", "));
         try (JdbcConnection connection = databaseConnection()) {
             String query;
-            if (!additionalConditions.isEmpty() && !Strings.isNullOrEmpty(surrogateKey)) {
+            if (!Strings.isNullOrEmpty(additionalConditions) && !Strings.isNullOrEmpty(surrogateKey)) {
                 query = String.format(
                         "INSERT INTO %s VALUES('ad-hoc', 'execute-snapshot', '{\"type\": \"%s\",\"data-collections\": [%s], \"additional-conditions\": [%s], \"surrogate-key\": %s}')",
-                        signalTableName(), snapshotType.toString(), dataCollectionIdsList, buildAdditionalConditions(additionalConditions), surrogateKey);
+                        signalTableName(), snapshotType.toString(), dataCollectionIdsList, additionalConditions, surrogateKey);
             }
-            else if (!additionalConditions.isEmpty()) {
+            else if (!Strings.isNullOrEmpty(additionalConditions)) {
                 query = String.format(
                         "INSERT INTO %s VALUES('ad-hoc', 'execute-snapshot', '{\"type\": \"%s\",\"data-collections\": [%s], \"additional-conditions\": [%s]}')",
-                        signalTableName(), snapshotType.toString(), dataCollectionIdsList, buildAdditionalConditions(additionalConditions));
+                        signalTableName(), snapshotType.toString(), dataCollectionIdsList, additionalConditions);
             }
             else if (!Strings.isNullOrEmpty(surrogateKey)) {
                 query = String.format(

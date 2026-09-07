@@ -10,8 +10,8 @@ import static io.debezium.junit.EqualityCheck.LESS_THAN;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.entry;
 
-import java.io.File;
 import java.sql.SQLException;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -19,12 +19,12 @@ import java.util.stream.Collectors;
 
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceRecord;
-import org.junit.After;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import io.debezium.config.CommonConnectorConfig;
 import io.debezium.config.Configuration;
@@ -36,12 +36,11 @@ import io.debezium.data.VariableScaleDecimal;
 import io.debezium.doc.FixFor;
 import io.debezium.jdbc.JdbcConnection;
 import io.debezium.junit.SkipWhenDatabaseVersion;
-import io.debezium.kafka.KafkaCluster;
+import io.debezium.kafka.KafkaClusterUtils;
 import io.debezium.pipeline.signal.channels.KafkaSignalChannel;
 import io.debezium.pipeline.source.snapshot.incremental.AbstractIncrementalSnapshotTest;
 import io.debezium.relational.RelationalDatabaseConnectorConfig;
-import io.debezium.util.Collect;
-import io.debezium.util.Testing;
+import io.strimzi.test.container.StrimziKafkaCluster;
 
 public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotTest<PostgresConnector> {
 
@@ -58,40 +57,40 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotTest<Postg
             + "CREATE TYPE enum_type AS ENUM ('UP', 'DOWN', 'LEFT', 'RIGHT', 'STORY');"
             + "CREATE TABLE s1.enumpk (pk enum_type, aa integer, PRIMARY KEY(pk));";
 
-    @Before
-    public void before() throws SQLException {
+    @BeforeEach
+    void before() throws SQLException {
         TestHelper.dropAllSchemas();
-        initializeConnectorTestFramework();
 
         TestHelper.dropDefaultReplicationSlot();
         TestHelper.execute(SETUP_TABLES_STMT);
+        initializeConnectorTestFramework();
     }
 
-    @BeforeClass
-    public static void startKafka() throws Exception {
-        File dataDir = Testing.Files.createTestingDirectory("signal_cluster");
-        Testing.Files.delete(dataDir);
-        kafka = new KafkaCluster().usingDirectory(dataDir)
-                .deleteDataPriorToStartup(true)
-                .deleteDataUponShutdown(true)
-                .addBrokers(1)
-                .withKafkaConfiguration(Collect.propertiesOf(
-                        "auto.create.topics.enable", "false",
-                        "zookeeper.session.timeout.ms", "20000"))
-                .startup();
+    @BeforeAll
+    static void startKafka() throws Exception {
+        Map<String, String> props = new HashMap<>();
+        props.put("auto.create.topics.enable", "false");
 
-        kafka.createTopic("signals_topic", 1, 1);
+        kafkaCluster = new StrimziKafkaCluster.StrimziKafkaClusterBuilder()
+                .withNumberOfBrokers(1)
+                .withAdditionalKafkaConfiguration(props)
+                .withSharedNetwork()
+                .build();
+
+        kafkaCluster.start();
+
+        KafkaClusterUtils.createTopic("signals_topic", 1, (short) 1, kafkaCluster.getBootstrapServers());
     }
 
-    @AfterClass
-    public static void stopKafka() {
-        if (kafka != null) {
-            kafka.shutdown();
+    @AfterAll
+    static void stopKafka() {
+        if (kafkaCluster != null) {
+            kafkaCluster.stop();
         }
     }
 
-    @After
-    public void after() {
+    @AfterEach
+    void after() {
         stopConnector();
         TestHelper.dropDefaultReplicationSlot();
         TestHelper.dropPublication();
@@ -227,7 +226,7 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotTest<Postg
     }
 
     @Test
-    public void inserts4Pks() throws Exception {
+    void inserts4Pks() throws Exception {
         // Testing.Print.enable();
 
         populate4PkTable();
@@ -300,13 +299,13 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotTest<Postg
     }
 
     @Test
-    public void inserts4PksWithKafkaSignal() throws Exception {
+    void inserts4PksWithKafkaSignal() throws Exception {
         // Testing.Print.enable();
 
         populate4PkTable();
         startConnector(x -> x.with(CommonConnectorConfig.SIGNAL_ENABLED_CHANNELS, "source,kafka")
                 .with(KafkaSignalChannel.SIGNAL_TOPIC, getSignalsTopic())
-                .with(KafkaSignalChannel.BOOTSTRAP_SERVERS, kafka.brokerList()));
+                .with(KafkaSignalChannel.BOOTSTRAP_SERVERS, kafkaCluster.getBootstrapServers()));
 
         sendExecuteSnapshotKafkaSignal("s1.a4");
 
@@ -344,7 +343,7 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotTest<Postg
     }
 
     @Test
-    public void insertsNumericPk() throws Exception {
+    void insertsNumericPk() throws Exception {
         // Testing.Print.enable();
 
         try (JdbcConnection connection = databaseConnection()) {
@@ -364,6 +363,61 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotTest<Postg
                 null);
         for (int i = 0; i < expectedRecordCount; i++) {
             assertThat(dbChanges).contains(entry(i + 1, i));
+        }
+    }
+
+    @Test
+    @FixFor("debezium/dbz#2333")
+    public void insertsNumericPkWithSpecialValues() throws Exception {
+        try (JdbcConnection connection = databaseConnection()) {
+            connection.setAutoCommit(false);
+            for (int i = 1; i <= 18; i++) {
+                connection.executeWithoutCommitting(
+                        String.format("INSERT INTO s1.anumeric (pk, aa) VALUES (%d, %d)", i, i));
+            }
+            connection.executeWithoutCommitting(
+                    "INSERT INTO s1.anumeric (pk, aa) VALUES ('-Infinity'::numeric, 100)",
+                    "INSERT INTO s1.anumeric (pk, aa) VALUES ('Infinity'::numeric, 101)",
+                    "INSERT INTO s1.anumeric (pk, aa) VALUES ('NaN'::numeric, 102)");
+            connection.commit();
+        }
+        // String mode keeps the emitted keys JSON-safe: the test harness round-trips every record
+        // through the JSON converter, which cannot represent NaN or the infinities as float64. The
+        // boundary extraction under test is unaffected: chunk reads produce SpecialValueDecimal
+        // regardless of the emission mode.
+        startConnector(x -> x.with(PostgresConnectorConfig.DECIMAL_HANDLING_MODE, "string"));
+
+        sendAdHocSnapshotSignal("s1.anumeric");
+
+        // 21 rows with chunk size 10: the ascending key order is -Infinity, 1..18, Infinity, NaN, so the
+        // second chunk ends exactly on Infinity (bound as the next chunk's lower bound) and NaN is the
+        // maximum key, bound into every chunk query.
+        final int expectedRecordCount = 21;
+        final Map<Integer, Integer> dbChanges = consumeMixedWithIncrementalSnapshot(
+                expectedRecordCount,
+                x -> true,
+                k -> specialAwareKey(k.getString("pk")),
+                record -> ((Struct) record.value()).getStruct("after").getInt32(valueFieldName()),
+                "test_server.s1.anumeric",
+                null);
+        for (int i = 1; i <= 18; i++) {
+            assertThat(dbChanges).contains(entry(i, i));
+        }
+        assertThat(dbChanges).contains(entry(Integer.MIN_VALUE, 100));
+        assertThat(dbChanges).contains(entry(Integer.MAX_VALUE - 1, 101));
+        assertThat(dbChanges).contains(entry(Integer.MAX_VALUE, 102));
+    }
+
+    private int specialAwareKey(String pk) {
+        switch (pk) {
+            case "NAN":
+                return Integer.MAX_VALUE;
+            case "POSITIVE_INFINITY":
+                return Integer.MAX_VALUE - 1;
+            case "NEGATIVE_INFINITY":
+                return Integer.MIN_VALUE;
+            default:
+                return Integer.parseInt(pk);
         }
     }
 
@@ -442,14 +496,14 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotTest<Postg
         Set<Map.Entry<Integer, Struct>> entries = dbChanges.entrySet();
         assertThat(ROW_COUNT == entries.size());
         for (Map.Entry<Integer, Struct> e : entries) {
-            Assert.assertTrue(e.getValue().getInt64("xmin") == null);
-            Assert.assertTrue(e.getValue().getInt64("lsn") == null);
-            Assert.assertTrue(e.getValue().getInt64("txId") == null);
+            Assertions.assertTrue(e.getValue().getInt64("xmin") == null);
+            Assertions.assertTrue(e.getValue().getInt64("lsn") == null);
+            Assertions.assertTrue(e.getValue().getInt64("txId") == null);
         }
     }
 
     @Test
-    public void shouldOutputRecordsInCloudEventsFormat() throws Exception {
+    void shouldOutputRecordsInCloudEventsFormat() throws Exception {
         // Testing.Print.enable();
 
         try (JdbcConnection connection = databaseConnection()) {
@@ -509,6 +563,39 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotTest<Postg
         final var data = records.recordsForTopic(topicName);
         assertThat(data).hasSize(1);
         assertThat(data.get(0).valueSchema().field("gencol")).isNull();
+    }
+
+    @Test
+    @FixFor("DBZ-1329")
+    public void snapshotNewTableWithoutTableIncludeList() throws Exception {
+        // Testing.Print.enable();
+
+        // Populate the default table
+        populateTable();
+        // Start connector without an explicit table.include.list
+        startConnector();
+        waitForConnectorToStart();
+
+        // Create a completely new table at runtime
+        try (JdbcConnection connection = databaseConnection()) {
+            connection.execute("CREATE TABLE s1.tab2 (pk SERIAL, aa integer, PRIMARY KEY(pk));");
+            connection.execute("INSERT INTO s1.tab2 (aa) VALUES (1);");
+        }
+
+        // Trigger incremental snapshot for the new table
+        sendAdHocSnapshotSignal("s1.tab2");
+
+        // Verify the incremental snapshot message is properly generated without throwing NullPointerException
+        final int expectedRecordCount = 1;
+        final Map<Integer, Integer> dbChanges = consumeMixedWithIncrementalSnapshot(
+                expectedRecordCount,
+                x -> true,
+                k -> k.getInt32("pk"),
+                record -> ((Struct) record.value()).getStruct("after").getInt32("aa"),
+                "test_server.s1.tab2",
+                null);
+
+        assertThat(dbChanges).contains(entry(1, 1));
     }
 
     protected void populate4PkTable() throws SQLException {

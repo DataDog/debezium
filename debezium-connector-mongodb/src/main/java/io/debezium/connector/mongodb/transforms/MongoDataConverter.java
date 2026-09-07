@@ -93,34 +93,84 @@ public class MongoDataConverter {
     }
 
     /**
+     * Strategy interface for handling array encoding
+     */
+    private interface ArrayEncodingStrategy {
+        void processDocument(Map<String, Map<Object, BsonType>> documentSchema,
+                             Map<Object, BsonType> unifiedSchema,
+                             int index);
+
+        void finalizeSchema(Map<Object, BsonType> unifiedSchema);
+    }
+
+    /**
+     * Strategy for ARRAY encoding: merges all document schemas into one unified schema
+     */
+    private class ArrayEncodingArrayStrategy implements ArrayEncodingStrategy {
+        private final Map<String, Map<Object, BsonType>> mergedDocumentSchema = new LinkedHashMap<>();
+        private final Map<String, Set<Schema>> fieldSchemas = new LinkedHashMap<>();
+
+        @Override
+        public void processDocument(Map<String, Map<Object, BsonType>> documentSchema,
+                                    Map<Object, BsonType> unifiedSchema,
+                                    int index) {
+            mergeSchemas(mergedDocumentSchema, documentSchema, fieldSchemas);
+        }
+
+        @Override
+        public void finalizeSchema(Map<Object, BsonType> unifiedSchema) {
+            if (!mergedDocumentSchema.isEmpty()) {
+                unifiedSchema.put(mergedDocumentSchema, BsonType.DOCUMENT);
+            }
+        }
+    }
+
+    /**
+     * Strategy for DOCUMENT encoding: preserves each document as a separate indexed entry
+     */
+    private class ArrayEncodingDocumentStrategy implements ArrayEncodingStrategy {
+        @Override
+        public void processDocument(Map<String, Map<Object, BsonType>> documentSchema,
+                                    Map<Object, BsonType> unifiedSchema,
+                                    int index) {
+            // Wrap document schema with its index to ensure uniqueness in the map
+            // This prevents identical schemas from overwriting each other
+            final Map<Integer, Map<String, Map<Object, BsonType>>> indexedSchema = new LinkedHashMap<>();
+            indexedSchema.put(index, documentSchema);
+            unifiedSchema.put(indexedSchema, BsonType.DOCUMENT);
+        }
+
+        @Override
+        public void finalizeSchema(Map<Object, BsonType> unifiedSchema) {
+            // No finalization needed for DOCUMENT encoding
+        }
+    }
+
+    /**
      * Traverses a BsonArray and builds a unified schema for the array elements
      *
      * @param array the BsonArray to traverse
      * @return a map representing the unified schema of the array elements
      */
     public Map<Object, BsonType> traverseArray(BsonArray array) {
-        Map<Object, BsonType> unifiedSchema = new LinkedHashMap<>();
-        List<Object> arrayElementList = new ArrayList<>();
-        Map<String, Set<Schema>> fieldSchemas = new LinkedHashMap<>();
-        Map<String, Map<Object, BsonType>> mergedDocumentSchema = new LinkedHashMap<>();
+        final Map<Object, BsonType> unifiedSchema = new LinkedHashMap<>();
+        final List<Object> arrayElementList = new ArrayList<>();
 
+        // Select strategy based on array encoding mode
+        final var strategy = arrayEncoding == ArrayEncoding.ARRAY
+                ? new ArrayEncodingArrayStrategy()
+                : new ArrayEncodingDocumentStrategy();
+
+        int documentIndex = 0;
         for (BsonValue value : array) {
-            BsonType type = value.getBsonType();
 
-            switch (type) {
+            switch (value.getBsonType()) {
                 case ARRAY:
                     unifiedSchema.put(traverseArray(value.asArray()), BsonType.ARRAY);
                     break;
                 case DOCUMENT:
-                    Map<String, Map<Object, BsonType>> documentSchema = parseBsonDocument(value.asDocument());
-                    switch (arrayEncoding) {
-                        case ARRAY:
-                            mergeSchemas(mergedDocumentSchema, documentSchema, fieldSchemas);
-                            break;
-                        case DOCUMENT:
-                            unifiedSchema.put(documentSchema, BsonType.DOCUMENT);
-                            break;
-                    }
+                    final Map<String, Map<Object, BsonType>> documentSchema = parseBsonDocument(value.asDocument());
+                    strategy.processDocument(documentSchema, unifiedSchema, documentIndex++);
                     break;
                 default:
                     arrayElementList.add(value);
@@ -128,11 +178,12 @@ public class MongoDataConverter {
             }
         }
 
-        if (arrayEncoding == ArrayEncoding.ARRAY && !mergedDocumentSchema.isEmpty()) {
-            unifiedSchema.put(mergedDocumentSchema, BsonType.DOCUMENT);
-        }
-        else if (!arrayElementList.isEmpty()) {
-            Set<BsonType> types = new LinkedHashSet<>();
+        // Finalize schema based on strategy
+        strategy.finalizeSchema(unifiedSchema);
+
+        // Handle primitive array elements
+        if (!arrayElementList.isEmpty()) {
+            final Set<BsonType> types = new LinkedHashSet<>();
             for (Object element : arrayElementList) {
                 if (element instanceof BsonValue) {
                     types.add(((BsonValue) element).getBsonType());
@@ -169,6 +220,15 @@ public class MongoDataConverter {
      */
     private boolean isSameType(Object value, BsonType type) {
         return Objects.equals(value, type);
+    }
+
+    /**
+     * Checks if an object is an indexed schema wrapper created by ArrayEncodingDocumentStrategy.
+     */
+    private boolean isIndexedSchemaWrapper(Object object) {
+        return object instanceof Map<?, ?> wrapper
+                && !wrapper.isEmpty()
+                && wrapper.keySet().iterator().next() instanceof Integer;
     }
 
     /**
@@ -341,6 +401,23 @@ public class MongoDataConverter {
                                 if (isNestedListObject(object)) {
                                     parseArrayLists(documentBuilder, (List<?>) object);
                                 }
+                                else if (isIndexedSchemaWrapper(object)) {
+                                    @SuppressWarnings("unchecked")
+                                    final var indexedWrapper = (Map<Integer, Map<?, ?>>) object;
+                                    for (Entry<Integer, ?> indexedEntry : indexedWrapper.entrySet()) {
+                                        final var index = indexedEntry.getKey();
+                                        final var documentSchema = (Map<?, ?>) indexedEntry.getValue();
+
+                                        final var documentMapBuilder = SchemaBuilder.struct()
+                                                .name(documentBuilder.name() + "." + arrayElementStructName(index)).optional();
+
+                                        parseMapLists(documentMapBuilder, documentBuilder, documentSchema, builder.name() + "." + key, index);
+
+                                        if (!documentMapBuilder.fields().isEmpty()) {
+                                            documentBuilder.field(arrayElementStructName(index), documentMapBuilder.build());
+                                        }
+                                    }
+                                }
                                 else if (isNestedMapObject(object)) {
                                     SchemaBuilder documentMapBuilder = SchemaBuilder.struct()
                                             .name(documentBuilder.name() + "." + arrayElementStructName(fieldIndex)).optional();
@@ -398,6 +475,11 @@ public class MongoDataConverter {
                         else if (isNestedMapObject(subEntry.getKey()) && isSameType(subEntry.getValue(), BsonType.DOCUMENT)) {
                             // parse nested documents
                             schema(entryKey, (Entry<Object, BsonType>) subEntry, documentMapBuilder);
+                        }
+                        else if (isEmptyNestedMapObject(subEntry.getKey()) && isSameType(subEntry.getValue(), BsonType.DOCUMENT)) {
+                            // parse empty documents
+                            String docKey = fieldNamer.fieldNameFor(documentMapBuilder.name() + "." + entryKey);
+                            documentMapBuilder.field(entryKey, SchemaBuilder.struct().name(docKey).optional().build());
                         }
                         else {
                             // parse default values

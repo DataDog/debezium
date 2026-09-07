@@ -3,6 +3,7 @@ package io.debezium.schematranslator.schema;
 import io.debezium.config.Configuration;
 import io.debezium.connector.postgresql.PostgresConnectorConfig;
 import io.debezium.connector.postgresql.PostgresValueConverter;
+import io.debezium.connector.postgresql.TypeRegistry;
 import io.debezium.connector.postgresql.connection.PostgresConnection;
 import io.debezium.connector.postgresql.connection.PostgresConnection.PostgresValueConverterBuilder;
 import io.debezium.connector.postgresql.connection.PostgresDefaultValueConverter;
@@ -73,36 +74,39 @@ public class DebeziumSchemaReader {
         Set<TableId> requestedSet = Set.copyOf(requestedIds);
         Tables.TableFilter filter = Tables.TableFilter.fromPredicate(requestedSet::contains);
 
-        Charset databaseCharset;
-        try (PostgresConnection temp = new PostgresConnection(jdbcConfig, PostgresConnection.CONNECTION_GENERAL)) {
-            databaseCharset = temp.getDatabaseCharset();
-        }
+        // The TypeRegistry keeps this connection for lazily resolving types it has not seen yet,
+        // so it must stay open for as long as the schemas are being read.
+        try (PostgresConnection typeConnection = new PostgresConnection(jdbcConfig, PostgresConnection.CONNECTION_GENERAL)) {
+            final Charset databaseCharset = typeConnection.getDatabaseCharset();
+            final TypeRegistry typeRegistry = new TypeRegistry(typeConnection);
 
-        PostgresValueConverterBuilder vcBuilder = (typeRegistry) -> PostgresValueConverter.of(
-                connectorConfig, databaseCharset, typeRegistry);
+            PostgresValueConverterBuilder vcBuilder = (registry) -> PostgresValueConverter.of(
+                    connectorConfig, databaseCharset, registry);
 
-        try (PostgresConnection connection = new PostgresConnection(jdbcConfig, vcBuilder, PostgresConnection.CONNECTION_GENERAL)) {
-            PostgresDefaultValueConverter defaultValueConverter = connection.getDefaultValueConverter();
-            PostgresValueConverter valueConverter = vcBuilder.build(connection.getTypeRegistry());
-            TableSchemaBuilder tableSchemaBuilder = new TableSchemaBuilder(
-                    valueConverter, defaultValueConverter, schemaNameAdjuster,
-                    new CustomConverterRegistry(null), sourceInfoSchema,
-                    connectorConfig.getFieldNamer(), false);
+            try (PostgresConnection connection = new PostgresConnection(jdbcConfig, typeRegistry, vcBuilder, PostgresConnection.CONNECTION_GENERAL)) {
+                PostgresDefaultValueConverter defaultValueConverter = connection.getDefaultValueConverter();
+                PostgresValueConverter valueConverter = vcBuilder.build(connection.getTypeRegistry());
+                TableSchemaBuilder tableSchemaBuilder = new TableSchemaBuilder(
+                        valueConverter, defaultValueConverter, schemaNameAdjuster,
+                        new CustomConverterRegistry(null), sourceInfoSchema,
+                        connectorConfig.getFieldNamer(), false,
+                        connectorConfig.getEventConvertingFailureHandlingMode());
 
-            Tables tables = new Tables();
-            connection.readSchema(tables, null, null, filter, null, true);
+                Tables tables = new Tables();
+                connection.readSchema(tables, null, null, filter, null, true);
 
-            Map<TableId, TableSchema> result = new LinkedHashMap<>();
-            for (TableId tableId : requestedIds) {
-                Table table = tables.forTable(tableId);
-                if (table == null) {
-                    throw new RuntimeException("Table not found: " + tableId);
+                Map<TableId, TableSchema> result = new LinkedHashMap<>();
+                for (TableId tableId : requestedIds) {
+                    Table table = tables.forTable(tableId);
+                    if (table == null) {
+                        throw new RuntimeException("Table not found: " + tableId);
+                    }
+                    TableSchema tableSchema = tableSchemaBuilder.create(
+                            topicNamer.strategy(), table, null, null, null);
+                    result.put(tableId, tableSchema);
                 }
-                TableSchema tableSchema = tableSchemaBuilder.create(
-                        topicNamer.strategy(), table, null, null, null);
-                result.put(tableId, tableSchema);
+                return result;
             }
-            return result;
         }
     }
 

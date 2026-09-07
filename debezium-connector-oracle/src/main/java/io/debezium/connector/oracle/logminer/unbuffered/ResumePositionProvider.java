@@ -79,17 +79,14 @@ public class ResumePositionProvider implements AutoCloseable {
             // Lazily create the connection if it doesn't exist.
             if (connection == null) {
                 LOGGER.info("Starting the unbuffered resume position provider");
-                connection = new OracleConnection(jdbcConfig, false);
-
-                // Always make sure connection is not set to auto-commit
-                connection.setAutoCommit(false);
+                connection = new OracleConnection(connectorConfig, jdbcConfig, false);
 
                 // LogMiner must be run in the CDB
                 if (!Strings.isNullOrEmpty(connectorConfig.getPdbName())) {
                     connection.resetSessionToCdb();
                 }
 
-                sessionContext = new LogMinerSessionContext(connection, false, LogMiningStrategy.ONLINE_CATALOG);
+                sessionContext = new LogMinerSessionContext(connection, false, LogMiningStrategy.ONLINE_CATALOG, connectorConfig.getLogMiningPathToDictionary());
             }
 
             sessionContext.removeAllLogFilesFromSession();

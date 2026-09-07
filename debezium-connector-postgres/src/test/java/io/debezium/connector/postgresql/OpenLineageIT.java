@@ -9,10 +9,12 @@ import static io.debezium.connector.postgresql.TestHelper.decoderPlugin;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.entry;
 
+import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.ServiceLoader;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
@@ -20,9 +22,9 @@ import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
 import org.awaitility.Awaitility;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import io.debezium.config.CommonConnectorConfig;
 import io.debezium.config.Configuration;
@@ -46,21 +48,24 @@ public class OpenLineageIT extends AbstractAsyncEngineConnectorTest {
             "CREATE TABLE s2.a (pk SERIAL NOT NULL PRIMARY KEY, aa integer);";
     private static final String SETUP_TABLES_STMT = CREATE_TABLES_STMT + INSERT_STMT;
 
-    @Before
-    public void before() {
-        initializeConnectorTestFramework();
+    @BeforeEach
+    void before() throws SQLException {
+        TestHelper.dropAllSchemas();
         getDebeziumTestTransport().clear();
+        initializeConnectorTestFramework();
+        TestHelper.dropDefaultReplicationSlot();
+        TestHelper.dropPublication();
     }
 
-    @After
-    public void after() {
+    @AfterEach
+    void after() {
         stopConnector();
         TestHelper.dropDefaultReplicationSlot();
         TestHelper.dropPublication();
     }
 
     @Test
-    public void shouldProduceOpenLineageStartEvent() {
+    void shouldProduceOpenLineageStartEvent() throws Exception {
 
         DebeziumTestTransport debeziumTestTransport = getDebeziumTestTransport();
         Configuration.Builder configBuilder = TestHelper.defaultConfig()
@@ -73,6 +78,8 @@ public class OpenLineageIT extends AbstractAsyncEngineConnectorTest {
 
         start(PostgresConnector.class, configBuilder.build());
         assertConnectorIsRunning();
+
+        waitForStreamingRunning("postgres", TestHelper.TEST_SERVER);
 
         Optional<OpenLineage.RunEvent> runEvent = debeziumTestTransport.getRunEvents().stream()
                 .filter(e -> e.getEventType() == OpenLineage.RunEvent.EventType.START)
@@ -85,7 +92,7 @@ public class OpenLineageIT extends AbstractAsyncEngineConnectorTest {
     }
 
     @Test
-    public void shouldProduceOpenLineageRunningEvent() {
+    void shouldProduceOpenLineageRunningEvent() throws Exception {
 
         DebeziumTestTransport debeziumTestTransport = getDebeziumTestTransport();
         Configuration.Builder configBuilder = TestHelper.defaultConfig()
@@ -98,6 +105,8 @@ public class OpenLineageIT extends AbstractAsyncEngineConnectorTest {
 
         start(PostgresConnector.class, configBuilder.build());
         assertConnectorIsRunning();
+
+        waitForStreamingRunning("postgres", TestHelper.TEST_SERVER);
 
         Optional<OpenLineage.RunEvent> runEvent = debeziumTestTransport.getRunEvents().stream()
                 .filter(e -> e.getEventType() == OpenLineage.RunEvent.EventType.RUNNING)
@@ -110,7 +119,7 @@ public class OpenLineageIT extends AbstractAsyncEngineConnectorTest {
     }
 
     @Test
-    public void shouldProduceOpenLineageCompleteEvent() {
+    void shouldProduceOpenLineageCompleteEvent() throws Exception {
 
         DebeziumTestTransport debeziumTestTransport = getDebeziumTestTransport();
         Configuration.Builder configBuilder = TestHelper.defaultConfig()
@@ -123,6 +132,8 @@ public class OpenLineageIT extends AbstractAsyncEngineConnectorTest {
 
         start(PostgresConnector.class, configBuilder.build());
         assertConnectorIsRunning();
+
+        waitForStreamingRunning("postgres", TestHelper.TEST_SERVER);
 
         stopConnector(b -> {
             Optional<OpenLineage.RunEvent> runEvent = debeziumTestTransport.getRunEvents().stream()
@@ -137,7 +148,7 @@ public class OpenLineageIT extends AbstractAsyncEngineConnectorTest {
     }
 
     @Test
-    public void shouldProduceOpenLineageInputDataset() throws Exception {
+    void shouldProduceOpenLineageInputDataset() throws Exception {
 
         TestHelper.execute(SETUP_TABLES_STMT);
 
@@ -174,7 +185,7 @@ public class OpenLineageIT extends AbstractAsyncEngineConnectorTest {
     }
 
     @Test
-    public void shouldProduceOpenLineageInputDatasetUponDDLEvent() throws Exception {
+    void shouldProduceOpenLineageInputDatasetUponDDLEvent() throws Exception {
 
         TestHelper.execute(SETUP_TABLES_STMT);
 
@@ -210,7 +221,9 @@ public class OpenLineageIT extends AbstractAsyncEngineConnectorTest {
     }
 
     @Test
-    public void shouldProduceOpenLineageFailEvent() {
+    void shouldProduceOpenLineageFailEvent() {
+
+        TestHelper.execute(SETUP_TABLES_STMT);
 
         DebeziumTestTransport debeziumTestTransport = getDebeziumTestTransport();
         Configuration.Builder configBuilder = TestHelper.defaultConfig()
@@ -254,7 +267,7 @@ public class OpenLineageIT extends AbstractAsyncEngineConnectorTest {
     }
 
     @Test
-    public void shouldProduceOpenLineageOutputDataset() throws Exception {
+    void shouldProduceOpenLineageOutputDataset() throws Exception {
 
         TestHelper.execute(SETUP_TABLES_STMT);
 
@@ -286,6 +299,8 @@ public class OpenLineageIT extends AbstractAsyncEngineConnectorTest {
                 .toList();
 
         assertThat(runningEvents).hasSize(7);
+
+        assertThat(runningEvents.get(0).getRun().getRunId()).isEqualTo(runningEvents.get(5).getRun().getRunId());
 
         assertCorrectOutputDataset(runningEvents.get(5).getOutputs(), "test_server.s1.a", List.of("before;STRUCT",
                 "before.pk;INT32",
@@ -346,6 +361,51 @@ public class OpenLineageIT extends AbstractAsyncEngineConnectorTest {
                 "ts_us;INT64",
                 "ts_ns;INT64"));
 
+    }
+
+    @Test
+    public void runIdMustChangeUponRestart() throws Exception {
+
+        DebeziumTestTransport debeziumTestTransport = getDebeziumTestTransport();
+        Configuration.Builder configBuilder = TestHelper.defaultConfig()
+                .with(PostgresConnectorConfig.SNAPSHOT_MODE, PostgresConnectorConfig.SnapshotMode.INITIAL.getValue())
+                .with("openlineage.integration.enabled", true)
+                .with("openlineage.integration.config.file.path", getClass().getClassLoader().getResource("openlineage/openlineage.yml").getPath())
+                .with("openlineage.integration.job.description", "This connector does cdc for products")
+                .with("openlineage.integration.job.tags", "env=prod,team=cdc")
+                .with("openlineage.integration.job.owners", "Mario=maintainer,John Doe=Data scientist");
+
+        start(PostgresConnector.class, configBuilder.build());
+        assertConnectorIsRunning();
+
+        waitForStreamingRunning("postgres", TestHelper.TEST_SERVER);
+
+        Optional<OpenLineage.RunEvent> runEvent = debeziumTestTransport.getRunEvents().stream()
+                .filter(e -> e.getEventType() == OpenLineage.RunEvent.EventType.START)
+                .findFirst();
+
+        assertThat(runEvent).isPresent();
+
+        UUID firstRunId = runEvent.get().getRun().getRunId();
+
+        stopConnector();
+
+        debeziumTestTransport.clear();
+
+        assertConnectorNotRunning();
+
+        start(PostgresConnector.class, configBuilder.build());
+        waitForStreamingRunning("postgres", TestHelper.TEST_SERVER);
+
+        runEvent = debeziumTestTransport.getRunEvents().stream()
+                .filter(e -> e.getEventType() == OpenLineage.RunEvent.EventType.START)
+                .findFirst();
+
+        assertThat(runEvent).isPresent();
+
+        UUID secondRunId = runEvent.get().getRun().getRunId();
+
+        assertThat(firstRunId).isNotEqualTo(secondRunId);
     }
 
     private static void assertCorrectInputDataset(List<OpenLineage.InputDataset> inputs, String expectedName, List<String> expectedFields) {
@@ -452,7 +512,7 @@ public class OpenLineageIT extends AbstractAsyncEngineConnectorTest {
                 "connector.class=io.debezium.connector.postgresql.PostgresConnector",
                 "database.dbname=postgres",
                 "database.hostname=localhost",
-                "database.password=postgres",
+                "database.password=********",
                 "database.sslmode=disable",
                 "database.user=postgres",
                 "errors.max.retries=-1",

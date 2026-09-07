@@ -6,25 +6,30 @@
 package io.debezium.relational.history;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.io.File;
+import java.time.Duration;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeoutException;
 
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.config.ConfigValue;
+import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
-import org.junit.After;
-import org.junit.AfterClass;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import io.debezium.config.CommonConnectorConfig;
 import io.debezium.config.Configuration;
@@ -32,7 +37,7 @@ import io.debezium.connector.binlog.BinlogOffsetContext;
 import io.debezium.connector.binlog.BinlogPartition;
 import io.debezium.doc.FixFor;
 import io.debezium.junit.logging.LogInterceptor;
-import io.debezium.kafka.KafkaCluster;
+import io.debezium.kafka.KafkaClusterUtils;
 import io.debezium.pipeline.spi.Offsets;
 import io.debezium.pipeline.spi.Partition;
 import io.debezium.relational.Tables;
@@ -41,7 +46,7 @@ import io.debezium.storage.kafka.history.KafkaSchemaHistory;
 import io.debezium.text.ParsingException;
 import io.debezium.util.Collect;
 import io.debezium.util.Loggings;
-import io.debezium.util.Testing;
+import io.strimzi.test.container.StrimziKafkaCluster;
 
 import ch.qos.logback.classic.Level;
 
@@ -50,7 +55,7 @@ import ch.qos.logback.classic.Level;
  */
 public abstract class AbstractKafkaSchemaHistoryTest<P extends BinlogPartition, O extends BinlogOffsetContext<?>> {
 
-    private static KafkaCluster kafka;
+    private static StrimziKafkaCluster kafkaCluster;
 
     private KafkaSchemaHistory history;
     private Offsets<Partition, O> offsets;
@@ -58,31 +63,30 @@ public abstract class AbstractKafkaSchemaHistoryTest<P extends BinlogPartition, 
     private LogInterceptor interceptor;
     private static final int PARTITION_NO = 0;
 
-    @BeforeClass
-    public static void startKafka() throws Exception {
-        File dataDir = Testing.Files.createTestingDirectory("history_cluster");
-        Testing.Files.delete(dataDir);
+    @BeforeAll
+    static void startKafka() {
+        Map<String, String> props = new HashMap<>();
+        props.put("auto.create.topics.enable", "false");
 
         // Configure the extra properties to
-        kafka = new KafkaCluster().usingDirectory(dataDir)
-                .deleteDataPriorToStartup(true)
-                .deleteDataUponShutdown(true)
-                .addBrokers(1)
-                .withKafkaConfiguration(Collect.propertiesOf(
-                        "auto.create.topics.enable", "false",
-                        "zookeeper.session.timeout.ms", "20000"))
-                .startup();
+        kafkaCluster = new StrimziKafkaCluster.StrimziKafkaClusterBuilder()
+                .withNumberOfBrokers(1)
+                .withAdditionalKafkaConfiguration(props)
+                .withSharedNetwork()
+                .build();
+
+        kafkaCluster.start();
     }
 
-    @AfterClass
-    public static void stopKafka() {
-        if (kafka != null) {
-            kafka.shutdown();
+    @AfterAll
+    static void stopKafka() {
+        if (kafkaCluster != null) {
+            kafkaCluster.stop();
         }
     }
 
-    @Before
-    public void beforeEach() throws Exception {
+    @BeforeEach
+    void beforeEach() throws Exception {
         P source = createPartition("my-server", "my-db");
         Configuration config = Configuration.empty()
                 .edit()
@@ -94,8 +98,8 @@ public abstract class AbstractKafkaSchemaHistoryTest<P extends BinlogPartition, 
         history = new KafkaSchemaHistory();
     }
 
-    @After
-    public void afterEach() {
+    @AfterEach
+    void afterEach() {
         try {
             if (history != null) {
                 history.stop();
@@ -107,12 +111,81 @@ public abstract class AbstractKafkaSchemaHistoryTest<P extends BinlogPartition, 
     }
 
     @Test
-    public void shouldStartWithEmptyTopicAndStoreDataAndRecoverAllState() throws Exception {
+    void shouldStartWithEmptyTopicAndStoreDataAndRecoverAllState() throws Exception {
         String topicName = "empty-and-recovery-schema-changes";
 
         // Create the empty topic ...
-        kafka.createTopic(topicName, 1, 1);
+        KafkaClusterUtils.createTopic(topicName, 1, (short) 1, kafkaCluster.getBootstrapServers());
         testHistoryTopicContent(topicName, false);
+    }
+
+    @Test
+    @FixFor("debezium/dbz#2032")
+    void shouldRecoverWhenAnotherConsumerHoldsTheGroupPartition() throws Exception {
+        String topicName = "concurrent-recovery-schema-changes";
+        String historyName = "my-db-history";
+
+        KafkaClusterUtils.createTopic(topicName, 1, (short) 1, kafkaCluster.getBootstrapServers());
+
+        Configuration config = recoveryConfig(topicName, historyName);
+
+        history.configure(config, null, SchemaHistoryMetrics.NOOP, true);
+        history.start();
+        history.initializeStorage();
+        setLogPosition(0);
+        String ddl = "CREATE TABLE foo ( name VARCHAR(255) NOT NULL PRIMARY KEY);";
+        history.record(offsets.getTheOnlyPartition().getSourcePartition(), offsets.getTheOnlyOffset().getOffset(), "db1", ddl);
+        history.stop();
+
+        DdlParser ddlParser = getDdlParser();
+        ddlParser.setCurrentSchema("db1");
+        Tables expected = new Tables();
+        ddlParser.parse(ddl, expected);
+        assertThat(expected.size()).isEqualTo(1);
+
+        // Another consumer joins the recovery group (group.id == history name) and claims the
+        // partition, as a second task would during a Connect rebalance.
+        Configuration squatterConfig = Configuration.create()
+                .with(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaCluster.getBootstrapServers())
+                .with(ConsumerConfig.GROUP_ID_CONFIG, historyName)
+                .with(ConsumerConfig.CLIENT_ID_CONFIG, "squatter")
+                .with(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false)
+                .with(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
+                .with(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class)
+                .with(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class)
+                .build();
+
+        try (KafkaConsumer<String, String> squatter = new KafkaConsumer<>(squatterConfig.asProperties())) {
+            squatter.subscribe(Collections.singletonList(topicName));
+            long deadline = System.currentTimeMillis() + 30000;
+            while (squatter.assignment().isEmpty() && System.currentTimeMillis() < deadline) {
+                squatter.poll(Duration.ofMillis(100));
+            }
+            assertThat(squatter.assignment()).isNotEmpty();
+
+            history = new KafkaSchemaHistory();
+            history.configure(config, null, SchemaHistoryListener.NOOP, true);
+            Tables recovered = new Tables();
+            setLogPosition(100);
+            history.recover(offsets, recovered, getDdlParser());
+
+            assertThat(recovered).isEqualTo(expected);
+        }
+    }
+
+    private Configuration recoveryConfig(String topicName, String historyName) {
+        return Configuration.create()
+                .with(KafkaSchemaHistory.BOOTSTRAP_SERVERS, kafkaCluster.getBootstrapServers())
+                .with(KafkaSchemaHistory.TOPIC, topicName)
+                .with(SchemaHistory.NAME, historyName)
+                .with(KafkaSchemaHistory.RECOVERY_POLL_INTERVAL_MS, 500)
+                .with(KafkaSchemaHistory.consumerConfigPropertyName(
+                        ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG), 100)
+                .with(KafkaSchemaHistory.consumerConfigPropertyName(
+                        ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG), 50000)
+                .with(KafkaSchemaHistory.INTERNAL_CONNECTOR_CLASS, "org.apache.kafka.connect.source.SourceConnector")
+                .with(KafkaSchemaHistory.INTERNAL_CONNECTOR_ID, "dbz-test")
+                .build();
     }
 
     protected abstract P createPartition(String serverName, String databaseName);
@@ -125,7 +198,7 @@ public abstract class AbstractKafkaSchemaHistoryTest<P extends BinlogPartition, 
         interceptor = new LogInterceptor(KafkaSchemaHistory.class);
         // Start up the history ...
         Configuration config = Configuration.create()
-                .with(KafkaSchemaHistory.BOOTSTRAP_SERVERS, kafka.brokerList())
+                .with(KafkaSchemaHistory.BOOTSTRAP_SERVERS, kafkaCluster.getBootstrapServers())
                 .with(KafkaSchemaHistory.TOPIC, topicName)
                 .with(SchemaHistory.NAME, "my-db-history")
                 .with(KafkaSchemaHistory.RECOVERY_POLL_INTERVAL_MS, 500)
@@ -235,11 +308,11 @@ public abstract class AbstractKafkaSchemaHistoryTest<P extends BinlogPartition, 
     }
 
     @Test
-    public void shouldIgnoreUnparseableMessages() throws Exception {
+    void shouldIgnoreUnparseableMessages() throws Exception {
         String topicName = "ignore-unparseable-schema-changes";
 
         // Create the empty topic ...
-        kafka.createTopic(topicName, 1, 1);
+        KafkaClusterUtils.createTopic(topicName, 1, (short) 1, kafkaCluster.getBootstrapServers());
 
         // Create invalid records
         final ProducerRecord<String, String> nullRecord = new ProducerRecord<>(topicName, PARTITION_NO, null, null);
@@ -258,7 +331,7 @@ public abstract class AbstractKafkaSchemaHistoryTest<P extends BinlogPartition, 
                 "{\"source\":{\"server\":\"my-server\"},\"position\":{\"filename\":\"my-txn-file.log\",\"position\":39},\"databaseName\":\"db1\",\"ddl\":\"CREATE DEFINER=`myUser`@`%` PROCEDURE `tableAFetchCount`(        in p_uniqueID int        )BEGINselect count(*) into @propCount from tableA  where uniqueID = p_uniqueID;    select count(*) into @completeCount from tableA  where uniqueID = p_uniqueID and isComplete = 1;       select  uniqueID,   @propCount as propCount, @completeCount as completeCount, @completeCount/ @propCount * 100 as completePct        where uniqueID = p_uniqueID;END\"}");
 
         final Configuration intruderConfig = Configuration.create()
-                .withDefault(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.brokerList())
+                .withDefault(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaCluster.getBootstrapServers())
                 .withDefault(ProducerConfig.CLIENT_ID_CONFIG, "intruder")
                 .withDefault(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class)
                 .withDefault(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class)
@@ -277,46 +350,48 @@ public abstract class AbstractKafkaSchemaHistoryTest<P extends BinlogPartition, 
         testHistoryTopicContent(topicName, true);
     }
 
-    @Test(expected = ParsingException.class)
-    public void shouldStopOnUnparseableSQL() throws Exception {
-        String topicName = "stop-on-unparseable-schema-changes";
+    @Test
+    void shouldStopOnUnparseableSQL() throws Exception {
+        assertThrows(ParsingException.class, () -> {
+            String topicName = "stop-on-unparseable-schema-changes";
 
-        // Create the empty topic ...
-        kafka.createTopic(topicName, 1, 1);
+            // Create the empty topic ...
+            KafkaClusterUtils.createTopic(topicName, 1, (short) 1, kafkaCluster.getBootstrapServers());
 
-        // Create invalid records
-        final ProducerRecord<String, String> invalidSQL = new ProducerRecord<>(topicName, PARTITION_NO, null,
-                "{\"source\":{\"server\":\"my-server\"},\"position\":{\"filename\":\"my-txn-file.log\",\"position\":39},\"databaseName\":\"db1\",\"ddl\":\"xxxDROP TABLE foo;\"}");
+            // Create invalid records
+            final ProducerRecord<String, String> invalidSQL = new ProducerRecord<>(topicName, PARTITION_NO, null,
+                    "{\"source\":{\"server\":\"my-server\"},\"position\":{\"filename\":\"my-txn-file.log\",\"position\":39},\"databaseName\":\"db1\",\"ddl\":\"xxxDROP TABLE foo;\"}");
 
-        final Configuration intruderConfig = Configuration.create()
-                .withDefault(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.brokerList())
-                .withDefault(ProducerConfig.CLIENT_ID_CONFIG, "intruder")
-                .withDefault(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class)
-                .withDefault(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class)
-                .build();
-        try (KafkaProducer<String, String> producer = new KafkaProducer<>(intruderConfig.asProperties())) {
-            producer.send(invalidSQL).get();
-        }
+            final Configuration intruderConfig = Configuration.create()
+                    .withDefault(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaCluster.getBootstrapServers())
+                    .withDefault(ProducerConfig.CLIENT_ID_CONFIG, "intruder")
+                    .withDefault(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class)
+                    .withDefault(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class)
+                    .build();
+            try (KafkaProducer<String, String> producer = new KafkaProducer<>(intruderConfig.asProperties())) {
+                producer.send(invalidSQL).get();
+            }
 
-        testHistoryTopicContent(topicName, false);
+            testHistoryTopicContent(topicName, false);
+        });
     }
 
     @Test
-    public void shouldSkipMessageOnDDLFilter() throws Exception {
+    void shouldSkipMessageOnDDLFilter() throws Exception {
         String topicName = "stop-on-ddlfilter-schema-changes";
 
         final LogInterceptor logInterceptor = new LogInterceptor(Loggings.class);
         logInterceptor.setLoggerLevel(Loggings.class, Level.TRACE);
 
         // Create the empty topic ...
-        kafka.createTopic(topicName, 1, 1);
+        KafkaClusterUtils.createTopic(topicName, 1, (short) 1, kafkaCluster.getBootstrapServers());
 
         // Create invalid records
         final ProducerRecord<String, String> invalidSQL = new ProducerRecord<>(topicName, PARTITION_NO, null,
                 "{\"source\":{\"server\":\"my-server\"},\"position\":{\"filename\":\"my-txn-file.log\",\"position\":39},\"databaseName\":\"db1\",\"ddl\":\"create  role if not exists 'RL_COMPLIANCE_NSA';\"}");
 
         final Configuration intruderConfig = Configuration.create()
-                .withDefault(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.brokerList())
+                .withDefault(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaCluster.getBootstrapServers())
                 .withDefault(ProducerConfig.CLIENT_ID_CONFIG, "intruder")
                 .withDefault(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class)
                 .withDefault(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class)
@@ -333,7 +408,7 @@ public abstract class AbstractKafkaSchemaHistoryTest<P extends BinlogPartition, 
     }
 
     @Test
-    public void testExists() throws InterruptedException {
+    void testExists() throws InterruptedException {
         String topicName = "exists-schema-changes";
 
         // happy path
@@ -342,7 +417,7 @@ public abstract class AbstractKafkaSchemaHistoryTest<P extends BinlogPartition, 
 
         // Set history to use dummy topic
         Configuration config = Configuration.create()
-                .with(KafkaSchemaHistory.BOOTSTRAP_SERVERS, kafka.brokerList())
+                .with(KafkaSchemaHistory.BOOTSTRAP_SERVERS, kafkaCluster.getBootstrapServers())
                 .with(KafkaSchemaHistory.TOPIC, "dummytopic")
                 .with(SchemaHistory.NAME, "my-db-history")
                 .with(KafkaSchemaHistory.RECOVERY_POLL_INTERVAL_MS, 500)
@@ -373,7 +448,7 @@ public abstract class AbstractKafkaSchemaHistoryTest<P extends BinlogPartition, 
         String topicName = "differentiate-storage-exists-schema-changes";
 
         Configuration config = Configuration.create()
-                .with(KafkaSchemaHistory.BOOTSTRAP_SERVERS, kafka.brokerList())
+                .with(KafkaSchemaHistory.BOOTSTRAP_SERVERS, kafkaCluster.getBootstrapServers())
                 .with(KafkaSchemaHistory.TOPIC, topicName)
                 .with(SchemaHistory.NAME, "my-db-history")
                 .with(KafkaSchemaHistory.RECOVERY_POLL_INTERVAL_MS, 500)
@@ -417,14 +492,15 @@ public abstract class AbstractKafkaSchemaHistoryTest<P extends BinlogPartition, 
                 "schema.history.internal.kafka.recovery.poll.interval.ms",
                 "schema.history.internal.connector.id",
                 "schema.history.internal.kafka.recovery.attempts",
-                "schema.history.internal.kafka.query.timeout.ms"));
+                "schema.history.internal.kafka.query.timeout.ms",
+                "schema.history.internal.kafka.buffer.batch.size"));
     }
 
     @Test
     @FixFor("DBZ-4518")
     public void shouldConnectionTimeoutIfValueIsTooLow() {
         Configuration config = Configuration.create()
-                .with(KafkaSchemaHistory.BOOTSTRAP_SERVERS, kafka.brokerList())
+                .with(KafkaSchemaHistory.BOOTSTRAP_SERVERS, kafkaCluster.getBootstrapServers())
                 .with(KafkaSchemaHistory.TOPIC, "this-should-not-get-created")
                 .with(SchemaHistory.NAME, "my-db-history")
                 .with(KafkaSchemaHistory.KAFKA_QUERY_TIMEOUT_MS, 1)

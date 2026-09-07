@@ -7,36 +7,28 @@ package io.debezium.connector.oracle.logminer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.lang.management.ManagementFactory;
-import java.math.BigInteger;
 import java.sql.Clob;
 import java.sql.SQLException;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
-
-import javax.management.JMException;
-import javax.management.MBeanServer;
-import javax.management.ObjectName;
 
 import org.apache.commons.lang3.RandomStringUtils;
+import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceRecord;
-import org.awaitility.Awaitility;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TestRule;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import io.debezium.config.Configuration;
 import io.debezium.connector.oracle.OracleConnection;
 import io.debezium.connector.oracle.OracleConnector;
 import io.debezium.connector.oracle.OracleConnectorConfig;
 import io.debezium.connector.oracle.Scn;
-import io.debezium.connector.oracle.junit.SkipTestDependingOnAdapterNameRule;
-import io.debezium.connector.oracle.junit.SkipTestDependingOnStrategyRule;
+import io.debezium.connector.oracle.junit.SkipOnDatabaseParameter;
 import io.debezium.connector.oracle.junit.SkipWhenAdapterNameIsNot;
 import io.debezium.connector.oracle.junit.SkipWhenLogMiningStrategyIs;
+import io.debezium.connector.oracle.util.OracleMetricsHelper;
 import io.debezium.connector.oracle.util.TestHelper;
+import io.debezium.data.Envelope;
 import io.debezium.data.VerifyRecord;
 import io.debezium.doc.FixFor;
 import io.debezium.embedded.async.AbstractAsyncEngineConnectorTest;
@@ -49,22 +41,16 @@ import io.debezium.junit.logging.LogInterceptor;
 @SkipWhenLogMiningStrategyIs(value = SkipWhenLogMiningStrategyIs.Strategy.HYBRID, reason = "Cannot use lob.enabled with Hybrid")
 public class TransactionCommitConsumerIT extends AbstractAsyncEngineConnectorTest {
 
-    @Rule
-    public final TestRule skipAdapterRule = new SkipTestDependingOnAdapterNameRule();
-
-    @Rule
-    public final TestRule skipStrategyRule = new SkipTestDependingOnStrategyRule();
-
     private static OracleConnection connection;
 
-    @BeforeClass
-    public static void beforeClass() throws SQLException {
+    @BeforeAll
+    static void beforeClass() throws SQLException {
         connection = TestHelper.testConnection();
         TestHelper.dropAllTables();
     }
 
-    @AfterClass
-    public static void afterClass() throws SQLException {
+    @AfterAll
+    static void afterClass() throws SQLException {
         if (connection != null) {
             connection.close();
         }
@@ -90,7 +76,7 @@ public class TransactionCommitConsumerIT extends AbstractAsyncEngineConnectorTes
             Configuration config = TestHelper.defaultConfig()
                     .with(OracleConnectorConfig.TABLE_INCLUDE_LIST, "DEBEZIUM\\.ADDRESSES,DEBEZIUM\\.EMAIL,DEBEZIUM\\.PHONE")
                     .with(OracleConnectorConfig.LOB_ENABLED, "true")
-                    .with(OracleConnectorConfig.SNAPSHOT_MODE, "schema_only")
+                    .with(OracleConnectorConfig.SNAPSHOT_MODE, "no_data")
                     .build();
 
             start(OracleConnector.class, config);
@@ -252,12 +238,7 @@ public class TransactionCommitConsumerIT extends AbstractAsyncEngineConnectorTes
             // Awaitility call below.
             connection.execute("INSERT INTO dbz9521b (id, data1) values (3, 'data')");
 
-            Awaitility.await()
-                    .atMost(2, TimeUnit.MINUTES)
-                    .until(() -> {
-                        final BigInteger offsetScn = getStreamingMetric("OffsetScn");
-                        return offsetScn != null && Scn.valueOf(offsetScn.toString()).compareTo(currentScn) > 0;
-                    });
+            OracleMetricsHelper.waitForOffsetScnAfter(currentScn);
 
             assertThat(interceptor.containsMessage("Skipping event "))
                     .as("Should not skip events")
@@ -273,12 +254,40 @@ public class TransactionCommitConsumerIT extends AbstractAsyncEngineConnectorTes
         }
     }
 
-    @SuppressWarnings("unchecked")
-    private <T> T getStreamingMetric(String metricName) throws JMException {
-        final MBeanServer mbeanServer = ManagementFactory.getPlatformMBeanServer();
+    @Test
+    @FixFor("debezium/dbz#2368")
+    @SkipOnDatabaseParameter(parameterName = "max_string_size", value = "EXTENDED", matches = false, reason = "Requires max_string_size set to EXTENDED")
+    public void shouldNotMergeExtendedStringAndXmlValues() throws Exception {
+        TestHelper.dropTable(connection, "dbz2368");
+        try {
+            connection.execute("create table dbz2368(id number(9,0) primary key, ext0 varchar2(8000), xml0 xmltype)");
+            TestHelper.streamTable(connection, "dbz2368");
 
-        final ObjectName objectName = getStreamingMetricsObjectName(TestHelper.CONNECTOR_NAME, TestHelper.SERVER_NAME);
-        return (T) mbeanServer.getAttribute(objectName, metricName);
+            Configuration config = TestHelper.defaultConfig()
+                    .with(OracleConnectorConfig.TABLE_INCLUDE_LIST, "DEBEZIUM\\.DBZ2368")
+                    .with(OracleConnectorConfig.LOB_ENABLED, "true")
+                    .build();
+
+            start(OracleConnector.class, config);
+            assertConnectorIsRunning();
+
+            waitForStreamingRunning(TestHelper.CONNECTOR_NAME, TestHelper.SERVER_NAME);
+
+            connection.execute(
+                    "insert into dbz2368(id, ext0, xml0) values (1, RPAD('ext0-1-', 4000, '0'), xmltype('<xml0><id>1</id><v>0</v></xml0>'))",
+                    "update dbz2368 set ext0 = RPAD('ext0-1-', 4000, '1'), xml0 = xmltype('<xml0><id>1</id><v>1</v></xml0>') where id = 1");
+
+            List<SourceRecord> tableRecords = consumeRecordsByTopic(1).recordsForTopic("server1.DEBEZIUM.DBZ2368");
+            assertThat(tableRecords).hasSize(1);
+
+            Struct after = ((Struct) tableRecords.get(0).value()).getStruct(Envelope.FieldName.AFTER);
+            assertThat(after.get("ID")).isEqualTo(1);
+            assertThat(after.get("EXT0")).isEqualTo("ext0-1-" + "1".repeat(3993));
+            assertThat(after.get("XML0")).isEqualTo("<xml0><id>1</id><v>1</v></xml0>");
+        }
+        finally {
+            TestHelper.dropTable(connection, "dbz2368");
+        }
     }
 
 }

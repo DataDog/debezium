@@ -18,10 +18,10 @@ import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceConnector;
 import org.apache.kafka.connect.source.SourceRecord;
 import org.assertj.core.api.Assertions;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import org.testcontainers.shaded.org.awaitility.Awaitility;
+import org.awaitility.Awaitility;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import io.debezium.connector.binlog.util.TestHelper;
 import io.debezium.connector.binlog.util.UniqueDatabase;
@@ -36,8 +36,8 @@ public abstract class InnoDBMvccSnapshot<C extends SourceConnector> extends Abst
             .getUniqueDatabase("simulation", "innodb_mvcc")
             .withDbHistoryPath(DB_HISTORY_PATH);
 
-    @Before
-    public void beforeEach() {
+    @BeforeEach
+    void beforeEach() {
         stopConnector();
 
         DATABASE.createAndInitialize();
@@ -45,8 +45,8 @@ public abstract class InnoDBMvccSnapshot<C extends SourceConnector> extends Abst
         Files.delete(DB_HISTORY_PATH);
     }
 
-    @After
-    public void afterEach() {
+    @AfterEach
+    void afterEach() {
         try {
             stopConnector();
         }

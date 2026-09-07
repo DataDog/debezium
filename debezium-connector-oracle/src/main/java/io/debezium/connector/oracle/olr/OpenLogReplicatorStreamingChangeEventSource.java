@@ -15,7 +15,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.debezium.DebeziumException;
-import io.debezium.connector.oracle.OracleConnection;
 import io.debezium.connector.oracle.OracleConnection.NonRelationalTableException;
 import io.debezium.connector.oracle.OracleConnectorConfig;
 import io.debezium.connector.oracle.OracleDatabaseSchema;
@@ -24,6 +23,7 @@ import io.debezium.connector.oracle.OraclePartition;
 import io.debezium.connector.oracle.OracleSchemaChangeEventEmitter;
 import io.debezium.connector.oracle.OracleValueConverters;
 import io.debezium.connector.oracle.Scn;
+import io.debezium.connector.oracle.jdbc.OracleConnectionFactory;
 import io.debezium.connector.oracle.olr.client.OlrNetworkClient;
 import io.debezium.connector.oracle.olr.client.PayloadEvent;
 import io.debezium.connector.oracle.olr.client.PayloadEvent.Type;
@@ -54,7 +54,7 @@ public class OpenLogReplicatorStreamingChangeEventSource implements StreamingCha
     private static final Logger LOGGER = LoggerFactory.getLogger(OpenLogReplicatorStreamingChangeEventSource.class);
 
     private final OracleConnectorConfig connectorConfig;
-    private final OracleConnection jdbcConnection;
+    private final OracleConnectionFactory connectionFactory;
     private final EventDispatcher<OraclePartition, TableId> dispatcher;
     private final ErrorHandler errorHandler;
     private final Clock clock;
@@ -69,14 +69,14 @@ public class OpenLogReplicatorStreamingChangeEventSource implements StreamingCha
     private Scn lastCheckpointScn = Scn.NULL;
     private long lastCheckpointIndex;
 
-    public OpenLogReplicatorStreamingChangeEventSource(OracleConnectorConfig connectorConfig, OracleConnection connection,
+    public OpenLogReplicatorStreamingChangeEventSource(OracleConnectorConfig connectorConfig, OracleConnectionFactory connectionFactory,
                                                        EventDispatcher<OraclePartition, TableId> dispatcher,
                                                        ErrorHandler errorHandler, Clock clock,
                                                        OracleDatabaseSchema schema,
                                                        OpenLogReplicatorStreamingChangeEventSourceMetrics streamingMetrics, SnapshotterService snapshotterService) {
         this.connectorConfig = connectorConfig;
         this.dispatcher = dispatcher;
-        this.jdbcConnection = connection;
+        this.connectionFactory = connectionFactory;
         this.errorHandler = errorHandler;
         this.clock = clock;
         this.schema = schema;
@@ -107,7 +107,6 @@ public class OpenLogReplicatorStreamingChangeEventSource implements StreamingCha
         try {
             this.partition = partition;
             this.offsetContext = offsetContext;
-            this.jdbcConnection.setAutoCommit(false);
 
             final Scn startScn = connectorConfig.getAdapter().getOffsetScn(offsetContext);
             final Long startScnIndex = offsetContext.getScnIndex();
@@ -417,7 +416,7 @@ public class OpenLogReplicatorStreamingChangeEventSource implements StreamingCha
                 "This may indicate a potential error in your configuration.", tableId);
         final String tableDdl;
         try {
-            tableDdl = jdbcConnection.getTableMetadataDdl(tableId);
+            tableDdl = connectionFactory.mainConnection().getTableMetadataDdl(tableId);
         }
         catch (NonRelationalTableException e) {
             LOGGER.warn("{} The event will be skipped.", e.getMessage());

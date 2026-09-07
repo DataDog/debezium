@@ -12,10 +12,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import io.debezium.config.CommonConnectorConfig;
+import io.debezium.connector.common.CdcSourceTaskContext;
+import io.debezium.relational.CustomConverterRegistry;
 import io.debezium.relational.DefaultValueConverter;
 import io.debezium.relational.HistorizedRelationalDatabaseSchema;
 import io.debezium.relational.RelationalTableFilters;
@@ -50,11 +54,11 @@ public abstract class BinlogDatabaseSchema<P extends BinlogPartition, O extends 
         extends HistorizedRelationalDatabaseSchema {
 
     private final static Logger LOGGER = LoggerFactory.getLogger(BinlogDatabaseSchema.class);
+    private static final Pattern TRUNCATE_STATEMENT_PATTERN = Pattern.compile("(SET STATEMENT .*)?TRUNCATE TABLE .*", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
 
     private final Set<String> ignoredQueryStatements = Collect.unmodifiableSet("BEGIN", "END", "FLUSH PRIVILEGES");
     private final DdlParser ddlParser;
     private final RelationalTableFilters filters;
-    private final DdlChanges ddlChanges;
     private final Map<Long, TableId> tableIdsByTableNumber = new ConcurrentHashMap<>();
     private final Map<Long, TableId> excludeTableIdsByTableNumber = new ConcurrentHashMap<>();
     private final BinlogConnectorConfig connectorConfig;
@@ -69,13 +73,15 @@ public abstract class BinlogDatabaseSchema<P extends BinlogPartition, O extends 
      * @param topicNamingStrategy the topic naming strategy to be used, should not be null
      * @param schemaNameAdjuster the schema name adjuster, should not be null
      * @param tableIdCaseInsensitive whether table identifiers are case-insensitive
+     * @param converterRegistry
      */
     public BinlogDatabaseSchema(BinlogConnectorConfig connectorConfig,
                                 V valueConverter,
                                 D defaultValueConverter,
                                 TopicNamingStrategy<TableId> topicNamingStrategy,
                                 SchemaNameAdjuster schemaNameAdjuster,
-                                boolean tableIdCaseInsensitive) {
+                                boolean tableIdCaseInsensitive, CustomConverterRegistry converterRegistry,
+                                CdcSourceTaskContext<? extends CommonConnectorConfig> taskContext) {
         super(connectorConfig,
                 topicNamingStrategy,
                 connectorConfig.getTableFilters().dataCollectionFilter(),
@@ -84,15 +90,14 @@ public abstract class BinlogDatabaseSchema<P extends BinlogPartition, O extends 
                         valueConverter,
                         defaultValueConverter,
                         schemaNameAdjuster,
-                        connectorConfig.customConverterRegistry(),
+                        converterRegistry,
                         connectorConfig.getSourceInfoStructMaker().schema(),
                         connectorConfig.getFieldNamer(),
                         false,
                         connectorConfig.getEventConvertingFailureHandlingMode()),
                 tableIdCaseInsensitive,
-                connectorConfig.getKeyMapper());
+                connectorConfig.getKeyMapper(), taskContext);
         this.ddlParser = createDdlParser(connectorConfig, valueConverter);
-        this.ddlChanges = this.ddlParser.getDdlChanges();
         this.connectorConfig = connectorConfig;
         this.filters = connectorConfig.getTableFilters();
     }
@@ -305,10 +310,10 @@ public abstract class BinlogDatabaseSchema<P extends BinlogPartition, O extends 
             return schemaChangeEvents;
         }
 
+        DdlChanges ddlChanges = new DdlChanges();
         try {
-            this.ddlChanges.reset();
             this.ddlParser.setCurrentSchema(databaseName);
-            this.ddlParser.parse(ddlStatements, tables());
+            ddlChanges = this.ddlParser.parse(ddlStatements, tables());
         }
         catch (ParsingException | MultipleParsingExceptions e) {
             if (skipUnparseableDdlStatements()) {
@@ -320,6 +325,13 @@ public abstract class BinlogDatabaseSchema<P extends BinlogPartition, O extends 
         }
 
         // No need to send schema events or store DDL if no table has changed
+        // Also skip if DDL matches the filter (e.g., CREATE FUNCTION, PROCEDURE, VIEW, TRIGGER)
+        // BUT do NOT filter TRUNCATE statements as they need special handling based on skipped.operations config
+        if (!TRUNCATE_STATEMENT_PATTERN.matcher(ddlStatements).matches() && ddlFilter().test(ddlStatements)) {
+            LOGGER.debug("Changes for DDL '{}' were filtered and not recorded in database schema history", ddlStatements);
+            return schemaChangeEvents;
+        }
+
         if (!storeOnlyCapturedTables() || isGlobalSetVariableStatement(ddlStatements, databaseName) || ddlChanges.anyMatch(filters)) {
             // We are supposed to _also_ record the schema changes as SourceRecords, but these need to be filtered
             // by database. Unfortunately, the databaseName on the event might not be the same database as that
