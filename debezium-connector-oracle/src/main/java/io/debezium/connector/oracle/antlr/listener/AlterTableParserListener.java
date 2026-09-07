@@ -8,6 +8,7 @@ package io.debezium.connector.oracle.antlr.listener;
 import static io.debezium.antlr.AntlrDdlParser.getText;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import org.antlr.v4.runtime.tree.ParseTreeListener;
@@ -106,6 +107,10 @@ public class AlterTableParserListener extends BaseParserListener {
     @Override
     public void enterAdd_column_clause(PlSqlParser.Add_column_clauseContext ctx) {
         parser.runIfNotNull(() -> {
+            if (!ctx.virtual_column_definition().isEmpty()) {
+                throw new ParsingException(null, "trying to add a virtual column in "
+                        + tableEditor.tableId().toString() + " table: virtual columns are not supported.");
+            }
             List<PlSqlParser.Column_definitionContext> columns = ctx.column_definition();
             columnEditors = new ArrayList<>(columns.size());
             for (PlSqlParser.Column_definitionContext column : columns) {
@@ -113,8 +118,10 @@ public class AlterTableParserListener extends BaseParserListener {
                 ColumnEditor editor = Column.editor().name(columnName);
                 columnEditors.add(editor);
             }
-            columnDefinitionParserListener = new ColumnDefinitionParserListener(tableEditor, columnEditors.get(0), parser, listeners);
-            listeners.add(columnDefinitionParserListener);
+            if (!columnEditors.isEmpty()) {
+                columnDefinitionParserListener = new ColumnDefinitionParserListener(tableEditor, columnEditors.get(0), parser, listeners);
+                listeners.add(columnDefinitionParserListener);
+            }
         }, tableEditor);
         super.enterAdd_column_clause(ctx);
     }
@@ -153,6 +160,10 @@ public class AlterTableParserListener extends BaseParserListener {
             listeners.remove(columnDefinitionParserListener);
             columnDefinitionParserListener = null;
         }, tableEditor, columnEditors);
+        // Oracle permits out-of-line constraints to be mixed into the ADD (...) column list.
+        // The columns are committed by exitColumn_definition, which also resets columnEditors to
+        // null before this callback fires, so this must only be guarded by the table editor.
+        parser.runIfNotNull(() -> setPrimaryKeyFromOutOfLineConstraints(ctx.out_of_line_constraint()), tableEditor);
         super.exitAdd_column_clause(ctx);
     }
 
@@ -234,17 +245,7 @@ public class AlterTableParserListener extends BaseParserListener {
         parser.runIfNotNull(() -> {
             if (ctx.ADD() != null) {
                 // ALTER TABLE ADD PRIMARY KEY
-                List<String> primaryKeyColumns = new ArrayList<>();
-                for (PlSqlParser.Out_of_line_constraintContext constraint : ctx.out_of_line_constraint()) {
-                    if (constraint.PRIMARY() != null && constraint.KEY() != null) {
-                        for (PlSqlParser.Column_nameContext columnNameContext : constraint.column_name()) {
-                            primaryKeyColumns.add(getColumnName(columnNameContext));
-                        }
-                    }
-                }
-                if (!primaryKeyColumns.isEmpty()) {
-                    tableEditor.setPrimaryKeyNames(primaryKeyColumns);
-                }
+                setPrimaryKeyFromOutOfLineConstraints(ctx.out_of_line_constraint());
             }
             else if (ctx.MODIFY() != null && ctx.PRIMARY() != null && ctx.KEY() != null) {
                 // ALTER TABLE MODIFY PRIMARY KEY columns
@@ -253,7 +254,7 @@ public class AlterTableParserListener extends BaseParserListener {
                     primaryKeyColumns.add(getColumnName(columnNameContext));
                 }
                 if (!primaryKeyColumns.isEmpty()) {
-                    tableEditor.setPrimaryKeyNames(primaryKeyColumns);
+                    parser.setTablePrimaryKeyColumns(tableEditor, primaryKeyColumns);
                 }
             }
         }, tableEditor);
@@ -264,9 +265,23 @@ public class AlterTableParserListener extends BaseParserListener {
     public void enterDrop_constraint_clause(PlSqlParser.Drop_constraint_clauseContext ctx) {
         parser.runIfNotNull(() -> {
             if (ctx.PRIMARY() != null) {
-                tableEditor.setPrimaryKeyNames();
+                parser.setTablePrimaryKeyColumns(tableEditor, Collections.emptyList());
             }
         }, tableEditor);
         super.enterDrop_constraint_clause(ctx);
+    }
+
+    private void setPrimaryKeyFromOutOfLineConstraints(List<PlSqlParser.Out_of_line_constraintContext> constraints) {
+        List<String> primaryKeyColumns = new ArrayList<>();
+        for (PlSqlParser.Out_of_line_constraintContext constraint : constraints) {
+            if (constraint.PRIMARY() != null && constraint.KEY() != null) {
+                for (PlSqlParser.Column_nameContext columnNameContext : constraint.column_name()) {
+                    primaryKeyColumns.add(getColumnName(columnNameContext));
+                }
+            }
+        }
+        if (!primaryKeyColumns.isEmpty()) {
+            parser.setTablePrimaryKeyColumns(tableEditor, primaryKeyColumns);
+        }
     }
 }

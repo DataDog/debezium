@@ -39,11 +39,17 @@ The following SMTs are provided by {prodname}:
 |xref:transformations/timezone-converter.adoc[Timezone Converter]
 |Converts {prodname} and Kafka Connect timestamp fields in event records to a specified timezone.
 
+|xref:transformations/geometry-format-transformer.adoc[Geometry Format Transformer]
+|Converts Debezium Geometry field types between Well-Known Binary(WKB) and Extended Well-Known Binary(EWKB) formats.
+
 |xref:transformations/timescaledb.adoc[TimescaleDB Integration]
 |Routes and enriches messages that the {prodname} PostgreSQL connector captures from a TimescaleDB.
 
 |xref:transformations/decode-logical-decoding-message-content.adoc[Decode Logical Decoding Message Content]
 |Converts the binary content of logical decoding messages captured by the {prodname} PostgreSQL connector into a structured form.
+
+|xref:transformations/enforce-record-size.adoc[Enforce Record Size]
+|Enforces a maximum record size by proportionally truncating large string and bytes columns when a change event exceeds the configured limit.
 
 |xref:transformations/vitess-use-local-vgtid.adoc[Vitess Use Local VGTID]
 |A transformation that reduces the size of VGTIDs that the Vitess connector emits.

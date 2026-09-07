@@ -1,5 +1,6 @@
 * Getting Started
-** xref:tutorial.adoc[Tutorial]
+** xref:tutorials.adoc[Tutorials]
+*** xref:kc-tutorial.adoc[Kafka Connect]
 ** xref:install.adoc[Installation]
 *** xref:postgres-plugins.adoc[PostgreSQL Decoding Plugins]
 ** xref:architecture.adoc[Architecture]
@@ -10,6 +11,7 @@
 ** xref:configuration/signalling.adoc[Sending Signals to Debezium]
 ** xref:configuration/notification.adoc[Receive notifications from Debezium]
 ** xref:configuration/storage.adoc[Store Debezium state]
+** xref:configuration/eos.adoc[Exactly-once delivery]
 * Source Connectors
 ** xref:connectors/index.adoc[Overview]
 ** xref:connectors/mysql.adoc[MySQL]
@@ -23,6 +25,8 @@
 ** xref:connectors/vitess.adoc[Vitess]
 ** xref:connectors/spanner.adoc[Spanner]
 ** xref:connectors/informix.adoc[Informix]
+** xref:connectors/cockroachdb.adoc[CockroachDB]
+** xref:connectors/yashandb.adoc[YashanDB]
 * Sink Connectors
 ** xref:connectors/index-sink.adoc[Overview]
 ** xref:connectors/jdbc.adoc[JDBC]
@@ -42,9 +46,12 @@
 ** xref:transformations/partition-routing.adoc[Partition Routing]
 ** xref:transformations/header-to-value.adoc[HeaderToValue]
 ** xref:transformations/timezone-converter.adoc[Timezone Converter]
+** xref:transformations/geometry-format-transformer.adoc[Geometry Format Conversion]
 ** xref:transformations/timescaledb.adoc[TimescaleDB Integration]
 ** xref:transformations/decode-logical-decoding-message-content.adoc[Decode Logical Decoding Message Content]
 ** xref:transformations/vector-to-json.adoc[Vector Data Types to JSON Types]
+** xref:transformations/enforce-record-size.adoc[Enforce Record Size]
+** xref:transformations/swap-geometry-coordinates.adoc[Swap Geometry Coordinates]
 * Post Processors
 ** xref:post-processors/index.adoc[Overview]
 ** xref:post-processors/reselect-columns.adoc[Reselect Columns]
@@ -57,11 +64,15 @@
 ** xref:integrations/cloudevents.adoc[CloudEvents]
 ** xref:integrations/openlineage.adoc[OpenLineage]
 ** xref:integrations/tracing.adoc[OpenTelemetry]
+** xref:integrations/quarkus-debezium-engine-extension.adoc[Debezium Extensions for Quarkus]
+** xref:integrations/hibernate-cache.adoc[Hibernate Cache Invalidation]
 ** xref:integrations/testcontainers.adoc[Integration Testing with Testcontainers]
 * Debezium AI
 ** xref:ai/embeddings.adoc[Embeddings Transformation]
+** xref:ai/docling.adoc[Docling Transformation]
 * Standalone Debezium
 ** xref:operations/debezium-server.adoc[Debezium Server]
+** xref:operations/debezium-operator.adoc[Debezium Operator]
 ** xref:operations/debezium-platform.adoc[Debezium Management Platform]
 * Operations
 ** xref:operations/logging.adoc[Logging]

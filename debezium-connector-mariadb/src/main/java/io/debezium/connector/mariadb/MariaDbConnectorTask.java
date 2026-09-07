@@ -11,21 +11,26 @@ import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.stream.Collectors;
+import java.util.Set;
 
 import org.apache.kafka.connect.source.SourceRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.github.shyiko.mysql.binlog.BinaryLogClient;
+
 import io.debezium.DebeziumException;
 import io.debezium.bean.StandardBeanNames;
+import io.debezium.config.CommonConnectorConfig;
 import io.debezium.config.Configuration;
 import io.debezium.config.Field;
 import io.debezium.connector.base.ChangeEventQueue;
+import io.debezium.connector.base.QueueProviderService;
 import io.debezium.connector.binlog.BinlogEventMetadataProvider;
 import io.debezium.connector.binlog.BinlogSourceTask;
 import io.debezium.connector.binlog.jdbc.BinlogConnectorConnection;
 import io.debezium.connector.binlog.jdbc.BinlogFieldReader;
+import io.debezium.connector.common.CdcSourceTaskContext;
 import io.debezium.connector.common.DebeziumHeaderProducer;
 import io.debezium.connector.mariadb.jdbc.MariaDbConnection;
 import io.debezium.connector.mariadb.jdbc.MariaDbConnectionConfiguration;
@@ -34,15 +39,18 @@ import io.debezium.connector.mariadb.jdbc.MariaDbValueConverters;
 import io.debezium.connector.mariadb.metrics.MariaDbChangeEventSourceMetricsFactory;
 import io.debezium.connector.mariadb.metrics.MariaDbStreamingChangeEventSourceMetrics;
 import io.debezium.document.DocumentReader;
+import io.debezium.heartbeat.HeartbeatFactory;
 import io.debezium.jdbc.DefaultMainConnectionProvidingConnectionFactory;
 import io.debezium.jdbc.MainConnectionProvidingConnectionFactory;
 import io.debezium.pipeline.ChangeEventSourceCoordinator;
 import io.debezium.pipeline.DataChangeEvent;
 import io.debezium.pipeline.ErrorHandler;
 import io.debezium.pipeline.EventDispatcher;
+import io.debezium.pipeline.GuardrailValidator;
 import io.debezium.pipeline.notification.NotificationService;
 import io.debezium.pipeline.signal.SignalProcessor;
 import io.debezium.pipeline.spi.Offsets;
+import io.debezium.relational.CustomConverterRegistry;
 import io.debezium.relational.TableId;
 import io.debezium.schema.SchemaFactory;
 import io.debezium.schema.SchemaNameAdjuster;
@@ -67,6 +75,7 @@ public class MariaDbConnectorTask extends BinlogSourceTask<MariaDbPartition, Mar
     private volatile BinlogConnectorConnection beanRegistryJdbcConnection;
     private volatile ErrorHandler errorHandler;
     private volatile MariaDbDatabaseSchema schema;
+    private MariaDbConnectorConfig connectorConfig;
 
     @Override
     public String version() {
@@ -79,9 +88,18 @@ public class MariaDbConnectorTask extends BinlogSourceTask<MariaDbPartition, Mar
     }
 
     @Override
+    public CdcSourceTaskContext<? extends CommonConnectorConfig> preStart(Configuration config) {
+
+        connectorConfig = new MariaDbConnectorConfig(config);
+        taskContext = new MariaDbTaskContext(config, connectorConfig);
+
+        return taskContext;
+    }
+
+    @Override
     protected ChangeEventSourceCoordinator<MariaDbPartition, MariaDbOffsetContext> start(Configuration configuration) {
         final Clock clock = Clock.system();
-        final MariaDbConnectorConfig connectorConfig = new MariaDbConnectorConfig(configuration);
+
         final TopicNamingStrategy<TableId> topicNamingStrategy = connectorConfig.getTopicNamingStrategy(TOPIC_NAMING_STRATEGY);
         final SchemaNameAdjuster schemaNameAdjuster = connectorConfig.schemaNameAdjuster();
         final MariaDbValueConverters valueConverters = getValueConverters(connectorConfig);
@@ -106,9 +124,14 @@ public class MariaDbConnectorTask extends BinlogSourceTask<MariaDbPartition, Mar
                 new MariaDbPartition.Provider(connectorConfig, config),
                 new MariaDbOffsetContext.Loader(connectorConfig));
 
+        // Service providers
+        registerServiceProviders(connectorConfig.getServiceRegistry());
+
         final boolean tableIdCaseInsensitive = connection.isTableIdCaseSensitive();
-        this.schema = new MariaDbDatabaseSchema(connectorConfig, valueConverters, topicNamingStrategy, schemaNameAdjuster, tableIdCaseInsensitive);
-        taskContext = new MariaDbTaskContext(connectorConfig, schema);
+        CustomConverterRegistry converterRegistry = connectorConfig.getServiceRegistry().tryGetService(CustomConverterRegistry.class);
+
+        this.schema = new MariaDbDatabaseSchema(connectorConfig, valueConverters, topicNamingStrategy, schemaNameAdjuster, tableIdCaseInsensitive, converterRegistry,
+                taskContext);
 
         // Manual Bean Registration
         beanRegistryJdbcConnection = connectionFactory.newConnection();
@@ -120,9 +143,6 @@ public class MariaDbConnectorTask extends BinlogSourceTask<MariaDbPartition, Mar
         connectorConfig.getBeanRegistry().add(StandardBeanNames.OFFSETS, previousOffsets);
         connectorConfig.getBeanRegistry().add(StandardBeanNames.CDC_SOURCE_TASK_CONTEXT, taskContext);
 
-        // Service providers
-        registerServiceProviders(connectorConfig.getServiceRegistry());
-
         final SnapshotterService snapshotterService = connectorConfig.getServiceRegistry().tryGetService(SnapshotterService.class);
         final Snapshotter snapshotter = snapshotterService.getSnapshotter();
 
@@ -131,6 +151,14 @@ public class MariaDbConnectorTask extends BinlogSourceTask<MariaDbPartition, Mar
         // If the binlog position is not available, it is necessary to re-execute the snapshot
         if (validateSnapshotFeasibility(snapshotter, previousOffsets.getTheOnlyOffset(), connection)) {
             previousOffsets.resetOffset(previousOffsets.getTheOnlyPartition());
+        }
+
+        // Validate guardrail limits for captured tables to prevent loading excessive table schemas into memory
+        if (connectorConfig.getGuardrailCollectionsMax() <= 0) {
+            LOGGER.info("Guardrail validation skipped");
+        }
+        else {
+            validateGuardrailLimits(connectorConfig, connection);
         }
 
         LOGGER.info("Closing JDBC connection before starting schema recovery.");
@@ -182,6 +210,7 @@ public class MariaDbConnectorTask extends BinlogSourceTask<MariaDbPartition, Mar
                 .maxBatchSize(connectorConfig.getMaxBatchSize())
                 .maxQueueSize(connectorConfig.getMaxQueueSize())
                 .maxQueueSizeInBytes(connectorConfig.getMaxQueueSizeInBytes())
+                .queueProvider(connectorConfig.getServiceRegistry().tryGetService(QueueProviderService.class).getQueueProvider())
                 .loggingContextSupplier(() -> taskContext.configureLoggingContext(CONTEXT_NAME))
                 .buffering()
                 .build();
@@ -198,7 +227,6 @@ public class MariaDbConnectorTask extends BinlogSourceTask<MariaDbPartition, Mar
                 DocumentReader.defaultReader(),
                 previousOffsets);
 
-        final Configuration heartbeatConfig = config;
         final EventDispatcher<MariaDbPartition, TableId> dispatcher = new EventDispatcher<>(
                 connectorConfig,
                 topicNamingStrategy,
@@ -208,21 +236,29 @@ public class MariaDbConnectorTask extends BinlogSourceTask<MariaDbPartition, Mar
                 DataChangeEvent::new,
                 null,
                 metadataProvider,
-                connectorConfig.createHeartbeat(
-                        topicNamingStrategy,
-                        schemaNameAdjuster,
+                new HeartbeatFactory<>().getScheduledHeartbeat(connectorConfig,
                         () -> new MariaDbConnection(
-                                new MariaDbConnectionConfiguration(heartbeatConfig),
+                                new MariaDbConnectionConfiguration(config),
                                 getFieldReader(connectorConfig)),
-                        new BinlogHeartbeatErrorHandler()),
+                        new BinlogHeartbeatErrorHandler(),
+                        queue),
                 schemaNameAdjuster,
                 signalProcessor,
                 connectorConfig.getServiceRegistry().tryGetService(DebeziumHeaderProducer.class));
 
+        // Create the binary log client that will be used for streaming change events
+        final BinaryLogClient binaryLogClient = new BinaryLogClient(
+                connectorConfig.getHostName(),
+                connectorConfig.getPort(),
+                connectorConfig.getUserName(),
+                connectorConfig.getPassword());
+
         final MariaDbStreamingChangeEventSourceMetrics streamingMetrics = new MariaDbStreamingChangeEventSourceMetrics(
                 taskContext,
                 queue,
-                metadataProvider);
+                metadataProvider,
+                schema::dataCollectionIds,
+                binaryLogClient);
 
         NotificationService<MariaDbPartition, MariaDbOffsetContext> notificationService = new NotificationService<>(
                 getNotificationChannels(),
@@ -245,7 +281,8 @@ public class MariaDbConnectorTask extends BinlogSourceTask<MariaDbPartition, Mar
                         taskContext,
                         streamingMetrics,
                         queue,
-                        snapshotterService),
+                        snapshotterService,
+                        binaryLogClient),
                 new MariaDbChangeEventSourceMetricsFactory(streamingMetrics),
                 dispatcher,
                 schema,
@@ -286,17 +323,20 @@ public class MariaDbConnectorTask extends BinlogSourceTask<MariaDbPartition, Mar
         if (schema != null) {
             schema.close();
         }
+
+        if (queue != null) {
+            queue.close();
+        }
     }
 
     @Override
     protected List<SourceRecord> doPoll() throws InterruptedException {
-        final List<DataChangeEvent> records = queue.poll();
-        return records.stream().map(DataChangeEvent::getRecord).collect(Collectors.toList());
+        return pollRecords(queue);
     }
 
     @Override
     protected Optional<ErrorHandler> getErrorHandler() {
-        return Optional.of(errorHandler);
+        return Optional.ofNullable(errorHandler);
     }
 
     private MariaDbValueConverters getValueConverters(MariaDbConnectorConfig connectorConfig) {
@@ -312,6 +352,17 @@ public class MariaDbConnectorTask extends BinlogSourceTask<MariaDbPartition, Mar
 
     private BinlogFieldReader getFieldReader(MariaDbConnectorConfig connectorConfig) {
         return new MariaDbFieldReader(connectorConfig);
+    }
+
+    private void validateGuardrailLimits(MariaDbConnectorConfig connectorConfig, BinlogConnectorConnection connection) {
+        try {
+            Set<TableId> allTableIds = connection.getAllTableIds();
+            GuardrailValidator validator = new GuardrailValidator(connectorConfig, schema);
+            validator.validate(allTableIds);
+        }
+        catch (SQLException e) {
+            throw new DebeziumException("Failed to validate guardrail limits", e);
+        }
     }
 
 }

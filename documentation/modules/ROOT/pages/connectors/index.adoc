@@ -6,6 +6,7 @@ Each connector produces change events with very similar structures, making it ea
 We currently have the following connectors:
 
 * xref:connectors/mongodb.adoc[MongoDB]
+* xref:connectors/mariadb.adoc[MariaDB]
 * xref:connectors/mysql.adoc[MySQL]
 * xref:connectors/postgresql.adoc[PostgreSQL]
 * xref:connectors/sqlserver.adoc[SQL Server]
@@ -15,6 +16,7 @@ We currently have the following connectors:
 * xref:connectors/vitess.adoc[Vitess] (Incubating)
 * xref:connectors/spanner.adoc[Spanner]
 * xref:connectors/informix.adoc[Informix] (Incubating)
+* xref:connectors/cockroachdb.adoc[CockroachDB] (Incubating)
 
 [NOTE]
 ====

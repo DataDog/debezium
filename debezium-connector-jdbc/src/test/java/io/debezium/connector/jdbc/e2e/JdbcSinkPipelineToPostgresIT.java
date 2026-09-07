@@ -6,12 +6,14 @@
 package io.debezium.connector.jdbc.e2e;
 
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.postgresql.util.PGobject;
 
 import io.debezium.connector.jdbc.junit.jupiter.PostgresSinkDatabaseContextProvider;
 import io.debezium.connector.jdbc.junit.jupiter.Sink;
@@ -20,6 +22,8 @@ import io.debezium.connector.jdbc.junit.jupiter.e2e.ForSource;
 import io.debezium.connector.jdbc.junit.jupiter.e2e.WithTemporalPrecisionMode;
 import io.debezium.connector.jdbc.junit.jupiter.e2e.source.Source;
 import io.debezium.connector.jdbc.junit.jupiter.e2e.source.SourceType;
+import io.debezium.spatial.GeometryBytes;
+import io.debezium.util.HexConverter;
 
 /**
  * Implementation of the JDBC sink connector multi-source pipeline that writes to PostgreSQL.
@@ -175,7 +179,7 @@ public class JdbcSinkPipelineToPostgresIT extends AbstractJdbcSinkPipelineIT {
     }
 
     @Override
-    protected String getTimeWithTimezoneType() {
+    protected String getTimeWithTimezoneType(Source source, boolean key, int precision) {
         return "TIMETZ";
     }
 
@@ -192,6 +196,59 @@ public class JdbcSinkPipelineToPostgresIT extends AbstractJdbcSinkPipelineIT {
     @Override
     protected String getIntervalType(Source source, boolean numeric) {
         return "INTERVAL";
+    }
+
+    @Override
+    protected String getGeographyType() {
+        return "\"postgis\".\"geography\"";
+    }
+
+    @Override
+    protected String getGeometryType() {
+        return "\"postgis\".\"geometry\"";
+    }
+
+    @Override
+    protected GeometryBytes getGeometryValues(ResultSet resultSet, int index) throws SQLException {
+        final PGobject object = (PGobject) resultSet.getObject(index);
+        if (object == null || object.getValue() == null) {
+            return null;
+        }
+        // Tests expect WKB so convert it from EWKB that Postgres provides
+        return new GeometryBytes(HexConverter.convertFromHex(object.getValue())).asWkb();
+    }
+
+    @TestTemplate
+    @ForSource(value = SourceType.POSTGRES, reason = "PostgreSQL source emits multi-byte BIT values as Debezium Bits")
+    public void testBitDataTypeWithMultiByteValues(Source source, Sink sink) throws Exception {
+        assertDataTypesNonKeyOnly(source,
+                sink,
+                List.of("bit(8)", "bit(16)", "bit(24)"),
+                List.of("B'11111111'", "B'0000000100000010'", "B'000000110000001000000001'"),
+                List.of("11111111", "0000000100000010", "000000110000001000000001"),
+                (record) -> {
+                    assertColumn(sink, record, "data0", getBitsDataType(), 8);
+                    assertColumn(sink, record, "data1", getBitsDataType(), 16);
+                    assertColumn(sink, record, "data2", getBitsDataType(), 24);
+                },
+                ResultSet::getString);
+    }
+
+    @TestTemplate
+    @ForSource(value = SourceType.POSTGRES, reason = "PostgreSQL source emits multi-byte VARBIT values as Debezium Bits")
+    public void testBitVaryingDataTypeWithMultiByteValues(Source source, Sink sink) throws Exception {
+        assertDataTypesNonKeyOnly(source,
+                sink,
+                List.of("bit varying(8)", "bit varying(16)", "bit varying(24)"),
+                List.of("B'11111111'", "B'0000000100000010'", "B'000000110000001000000001'"),
+                List.of("11111111", "0000000100000010", "000000110000001000000001"),
+                (record) -> {
+                    final String dataType = source.getOptions().isColumnTypePropagated() ? "VARBIT" : getBitsDataType();
+                    assertColumn(sink, record, "data0", dataType, 8);
+                    assertColumn(sink, record, "data1", dataType, 16);
+                    assertColumn(sink, record, "data2", dataType, 24);
+                },
+                ResultSet::getString);
     }
 
     @TestTemplate
@@ -241,6 +298,30 @@ public class JdbcSinkPipelineToPostgresIT extends AbstractJdbcSinkPipelineIT {
                 List.of("'[101,102,103]'"),
                 List.of("[101,102,103]"),
                 (record) -> assertColumn(sink, record, "data", "HALFVEC"),
+                ResultSet::getString);
+    }
+
+    @TestTemplate
+    @ForSource(value = SourceType.POSTGRES, reason = "The tsvector data type only applies to PostgreSQL")
+    public void testTsvectorDataTypeWithStaticValue(Source source, Sink sink) throws Exception {
+        assertDataTypeNonKeyOnly(source,
+                sink,
+                "tsvector",
+                List.of("'full:3 postgre:1 search:5 support:2 text:4'"),
+                List.of("'full':3 'postgre':1 'search':5 'support':2 'text':4"),
+                (record) -> assertColumn(sink, record, "data", "tsvector"),
+                ResultSet::getString);
+    }
+
+    @TestTemplate
+    @ForSource(value = SourceType.POSTGRES, reason = "The tsvector data type only applies to PostgreSQL")
+    public void testTsvectorDataTypeWithDirectFunctionInsert(Source source, Sink sink) throws Exception {
+        assertDataTypeNonKeyOnly(source,
+                sink,
+                "tsvector",
+                List.of("to_tsvector('english', 'This is a test for direct tsvector insert')"),
+                List.of("'direct':6 'insert':8 'test':4 'tsvector':7"),
+                (record) -> assertColumn(sink, record, "data", "tsvector"),
                 ResultSet::getString);
     }
 

@@ -17,9 +17,9 @@ import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceConnector;
 import org.apache.kafka.connect.source.SourceRecord;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import io.debezium.config.Configuration;
 import io.debezium.connector.binlog.util.TestHelper;
@@ -42,16 +42,16 @@ public abstract class BinlogUnsignedIntegerIT<C extends SourceConnector> extends
     private final UniqueDatabase DATABASE = TestHelper.getUniqueDatabase("unsignednumericit", "unsigned_integer_test")
             .withDbHistoryPath(SCHEMA_HISTORY_PATH);
 
-    @Before
-    public void beforeEach() {
+    @BeforeEach
+    void beforeEach() {
         stopConnector();
-        DATABASE.createAndInitialize();
+        DATABASE.create();
         initializeConnectorTestFramework();
         Files.delete(SCHEMA_HISTORY_PATH);
     }
 
-    @After
-    public void afterEach() {
+    @AfterEach
+    void afterEach() {
         try {
             stopConnector();
         }
@@ -61,22 +61,25 @@ public abstract class BinlogUnsignedIntegerIT<C extends SourceConnector> extends
     }
 
     @Test
-    public void shouldConsumeAllEventsFromDatabaseUsingBinlogAndNoSnapshot() throws SQLException, InterruptedException {
+    void shouldConsumeAllEventsFromDatabaseUsingStreaming() throws SQLException, InterruptedException {
         // Use the DB configuration to define the connector's configuration ...
         config = DATABASE.defaultConfig()
-                .with(BinlogConnectorConfig.SNAPSHOT_MODE, BinlogConnectorConfig.SnapshotMode.NEVER)
+                .with(BinlogConnectorConfig.SNAPSHOT_MODE, BinlogConnectorConfig.SnapshotMode.NO_DATA)
                 .with(BinlogConnectorConfig.BIGINT_UNSIGNED_HANDLING_MODE, BinlogConnectorConfig.BigIntUnsignedHandlingMode.PRECISE)
                 .build();
 
         // Start the connector ...
         start(getConnectorClass(), config);
 
+        waitForStreamingRunning(getConnectorName(), DATABASE.getServerName(), getStreamingNamespace());
+        DATABASE.initialize();
+
         // ---------------------------------------------------------------------------------------------------------------
         // Consume all of the events due to startup and initialization of the database
         // ---------------------------------------------------------------------------------------------------------------
         // Testing.Debug.enable();
         int numCreateDatabase = 1;
-        int numCreateTables = 7;
+        int numCreateTables = 8;
         int numDataRecords = numCreateTables * 3; // Total data records
         SourceRecords records = consumeRecordsByTopic(numCreateDatabase + numCreateTables + numDataRecords);
         stopConnector();
@@ -90,12 +93,13 @@ public abstract class BinlogUnsignedIntegerIT<C extends SourceConnector> extends
                 .isEqualTo(3);
         assertThat(records.recordsForTopic(DATABASE.topicForTable("dbz_228_int_unsigned")).size())
                 .isEqualTo(3);
+        assertThat(records.recordsForTopic(DATABASE.topicForTable("dbz_integer_unsigned")).size())
+                .isEqualTo(3);
         assertThat(records.recordsForTopic(DATABASE.topicForTable("dbz_228_bigint_unsigned")).size())
                 .isEqualTo(3);
         assertThat(records.topics().size()).isEqualTo(1 + numCreateTables);
-        assertThat(records.databaseNames().size()).isEqualTo(1);
-        assertThat(records.ddlRecordsForDatabase(DATABASE.getDatabaseName()).size()).isEqualTo(
-                numCreateDatabase + numCreateTables);
+        assertThat(records.databaseNames().size()).isEqualTo(2);
+        assertThat(records.ddlRecordsForDatabase(DATABASE.getDatabaseName()).size()).isEqualTo(numCreateTables);
         assertThat(records.ddlRecordsForDatabase("regression_test")).isNull();
         assertThat(records.ddlRecordsForDatabase("connector_test")).isNull();
         assertThat(records.ddlRecordsForDatabase("readbinlog_test")).isNull();
@@ -109,6 +113,9 @@ public abstract class BinlogUnsignedIntegerIT<C extends SourceConnector> extends
             Struct value = (Struct) record.value();
             if (record.topic().endsWith("dbz_228_int_unsigned")) {
                 assertIntUnsigned(value);
+            }
+            else if (record.topic().endsWith("dbz_integer_unsigned")) {
+                assertIntegerUnsignedSynonym(value);
             }
             else if (record.topic().endsWith("dbz_228_tinyint_unsigned")) {
                 assertTinyintUnsigned(value);
@@ -128,21 +135,24 @@ public abstract class BinlogUnsignedIntegerIT<C extends SourceConnector> extends
 
     @Test
     @FixFor("DBZ-363")
-    public void shouldConsumeAllEventsFromBigIntTableInDatabaseUsingBinlogAndNoSnapshotUsingLong() throws SQLException, InterruptedException {
+    public void shouldConsumeAllEventsFromBigIntTableInDatabaseUsingStreamingUsingLong() throws SQLException, InterruptedException {
         // Use the DB configuration to define the connector's configuration ...
         config = DATABASE.defaultConfig()
-                .with(BinlogConnectorConfig.SNAPSHOT_MODE, BinlogConnectorConfig.SnapshotMode.NEVER.toString())
+                .with(BinlogConnectorConfig.SNAPSHOT_MODE, BinlogConnectorConfig.SnapshotMode.NO_DATA)
                 .with(BinlogConnectorConfig.BIGINT_UNSIGNED_HANDLING_MODE, BinlogConnectorConfig.BigIntUnsignedHandlingMode.LONG)
                 .build();
         // Start the connector ...
         start(getConnectorClass(), config);
+
+        waitForStreamingRunning(getConnectorName(), DATABASE.getServerName(), getStreamingNamespace());
+        DATABASE.initialize();
 
         // ---------------------------------------------------------------------------------------------------------------
         // Consume all of the events due to startup and initialization of the database
         // ---------------------------------------------------------------------------------------------------------------
         // Testing.Debug.enable();
         int numCreateDatabase = 1;
-        int numCreateTables = 7;
+        int numCreateTables = 8;
         int numDataRecords = numCreateTables * 3; // Total data records
         SourceRecords records = consumeRecordsByTopic(numCreateDatabase + numCreateTables + numDataRecords);
         stopConnector();
@@ -164,18 +174,19 @@ public abstract class BinlogUnsignedIntegerIT<C extends SourceConnector> extends
     }
 
     @Test
-    public void shouldConsumeAllEventsFromDatabaseUsingSnapshot() throws SQLException, InterruptedException {
+    void shouldConsumeAllEventsFromDatabaseUsingSnapshot() throws SQLException, InterruptedException {
         // Use the DB configuration to define the connector's configuration ...
         config = DATABASE.defaultConfig().build();
 
         // Start the connector ...
+        DATABASE.initialize();
         start(getConnectorClass(), config);
 
         // ---------------------------------------------------------------------------------------------------------------
         // Consume all of the events due to startup and initialization of the database
         // ---------------------------------------------------------------------------------------------------------------
         // Testing.Debug.enable();
-        int numTables = 7;
+        int numTables = 8;
         int numDataRecords = numTables * 3;
         int numDdlRecords = numTables * 2 + 3; // for each table (1 drop + 1 create) + for each db (1 create + 1 drop + 1 use)
         int numSetVariables = 1;
@@ -190,6 +201,8 @@ public abstract class BinlogUnsignedIntegerIT<C extends SourceConnector> extends
         assertThat(records.recordsForTopic(DATABASE.topicForTable("dbz_228_mediumint_unsigned")).size())
                 .isEqualTo(3);
         assertThat(records.recordsForTopic(DATABASE.topicForTable("dbz_228_int_unsigned")).size())
+                .isEqualTo(3);
+        assertThat(records.recordsForTopic(DATABASE.topicForTable("dbz_integer_unsigned")).size())
                 .isEqualTo(3);
         assertThat(records.recordsForTopic(DATABASE.topicForTable("dbz_228_bigint_unsigned")).size())
                 .isEqualTo(3);
@@ -210,6 +223,9 @@ public abstract class BinlogUnsignedIntegerIT<C extends SourceConnector> extends
             Struct value = (Struct) record.value();
             if (record.topic().endsWith("dbz_228_int_unsigned")) {
                 assertIntUnsigned(value);
+            }
+            else if (record.topic().endsWith("dbz_integer_unsigned")) {
+                assertIntegerUnsignedSynonym(value);
             }
             else if (record.topic().endsWith("dbz_228_tinyint_unsigned")) {
                 assertTinyintUnsigned(value);
@@ -368,6 +384,35 @@ public abstract class BinlogUnsignedIntegerIT<C extends SourceConnector> extends
                 assertThat(after.getInt64("c4")).isEqualTo(0L);
                 assertThat(after.getInt64("c5")).isEqualTo(0L);
                 assertThat(after.getInt32("c6")).isEqualTo(-2147483648);
+        }
+    }
+
+    private void assertIntegerUnsignedSynonym(Struct value) {
+        Struct after = value.getStruct(Envelope.FieldName.AFTER);
+        Integer i = after.getInt32("id");
+        assertThat(i).isNotNull();
+        // The INTEGER UNSIGNED synonym must behave identically to INT UNSIGNED: INT64 schema for unsigned columns
+        assertThat(after.schema().field("c1").schema()).isEqualTo(Schema.INT64_SCHEMA);
+        assertThat(after.schema().field("c2").schema()).isEqualTo(Schema.INT64_SCHEMA);
+
+        // Signed INTEGER remains INT32
+        assertThat(after.schema().field("c3").schema()).isEqualTo(Schema.INT32_SCHEMA);
+
+        switch (i) {
+            case 1:
+                assertThat(after.getInt64("c1")).isEqualTo(4294967295L);
+                assertThat(after.getInt64("c2")).isEqualTo(4294967295L);
+                assertThat(after.getInt32("c3")).isEqualTo(2147483647);
+                break;
+            case 2:
+                assertThat(after.getInt64("c1")).isEqualTo(3294967295L);
+                assertThat(after.getInt64("c2")).isEqualTo(3294967295L);
+                assertThat(after.getInt32("c3")).isEqualTo(-1147483647);
+                break;
+            case 3:
+                assertThat(after.getInt64("c1")).isEqualTo(0L);
+                assertThat(after.getInt64("c2")).isEqualTo(0L);
+                assertThat(after.getInt32("c3")).isEqualTo(-2147483648);
         }
     }
 

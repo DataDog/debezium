@@ -1,4 +1,4 @@
-The following configuration properties are _required_ unless a default value is available.
+The following list describes the configuration properties that are required to deploy the {connector-name} connector, unless a default value is specified.
 
 [id="{context}-property-bigint-unsigned-handling-mode"]
 xref:{context}-property-bigint-unsigned-handling-mode[`bigint.unsigned.handling.mode`]::
@@ -389,6 +389,18 @@ That is, the specified expression is matched against the GTID's domain identifie
 If you set this property, do not also set the `gtid.source.excludes` property.
 
 
+[id="{context}-property-gtid-ignore-on-recovery"]
+xref:{context}-property-gtid-ignore-on-recovery[`gtid.ignore.on.recovery`]::
+
+Default value::: `false`
+
+Description:::
+Boolean value that specifies whether the connector ignores the GTID set in stored offsets during recovery.
+When set to `true`, the connector starts from the stored binlog file and position instead of attempting GTID-based positioning.
++
+After streaming resumes, the connector captures GTIDs normally and stores refreshed GTID state in subsequent offsets.
+
+
 [id="{context}-property-include-query"]
 xref:{context}-property-include-query[`include.query`]::
 
@@ -592,6 +604,7 @@ ifdef::community[]
 `adaptive`::::  (deprecated) The connector captures time and timestamp values exactly as in the database using either millisecond, microsecond, or nanosecond precision values based on the data type of the column.
 endif::community[]
 `connect`:::: The connector always represents time and timestamp values using Kafka Connect's built-in representations for Time, Date, and Timestamp, which use millisecond precision regardless of the database columns' precision.
+`isostring`:::: The connector represents time, date, and datetime values as ISO-8601 formatted strings at the UTC time zone, using the `io.debezium.time.IsoDate`, `io.debezium.time.IsoTime`, and `io.debezium.time.IsoTimestamp` semantic types.
 
 
 

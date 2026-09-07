@@ -3,7 +3,7 @@
     <parent>
         <groupId>io.debezium</groupId>
         <artifactId>debezium-openlineage</artifactId>
-        <version>3.2.4.Final</version>
+        <version>3.6.2.Final</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -19,6 +19,18 @@
         <dependency>
             <groupId>io.debezium</groupId>
             <artifactId>debezium-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-util</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.debezium</groupId>
+            <artifactId>debezium-config</artifactId>
             <scope>provided</scope>
         </dependency>
 

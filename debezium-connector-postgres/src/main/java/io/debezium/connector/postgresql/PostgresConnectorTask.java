@@ -12,8 +12,8 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.stream.Collectors;
 
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.connect.errors.ConnectException;
@@ -28,7 +28,9 @@ import io.debezium.config.CommonConnectorConfig;
 import io.debezium.config.Configuration;
 import io.debezium.config.Field;
 import io.debezium.connector.base.ChangeEventQueue;
+import io.debezium.connector.base.QueueProviderService;
 import io.debezium.connector.common.BaseSourceTask;
+import io.debezium.connector.common.CdcSourceTaskContext;
 import io.debezium.connector.common.DebeziumHeaderProducer;
 import io.debezium.connector.postgresql.connection.PostgresConnection;
 import io.debezium.connector.postgresql.connection.PostgresConnection.PostgresValueConverterBuilder;
@@ -37,17 +39,20 @@ import io.debezium.connector.postgresql.connection.ReplicationConnection;
 import io.debezium.connector.postgresql.spi.SlotCreationResult;
 import io.debezium.connector.postgresql.spi.SlotState;
 import io.debezium.document.DocumentReader;
+import io.debezium.heartbeat.HeartbeatFactory;
 import io.debezium.jdbc.DefaultMainConnectionProvidingConnectionFactory;
 import io.debezium.jdbc.MainConnectionProvidingConnectionFactory;
 import io.debezium.pipeline.ChangeEventSourceCoordinator;
 import io.debezium.pipeline.DataChangeEvent;
 import io.debezium.pipeline.ErrorHandler;
+import io.debezium.pipeline.GuardrailValidator;
 import io.debezium.pipeline.metrics.DefaultChangeEventSourceMetricsFactory;
 import io.debezium.pipeline.notification.NotificationService;
 import io.debezium.pipeline.signal.SignalProcessor;
 import io.debezium.pipeline.spi.OffsetContext;
 import io.debezium.pipeline.spi.Offsets;
 import io.debezium.pipeline.spi.Partition;
+import io.debezium.relational.CustomConverterRegistry;
 import io.debezium.relational.TableId;
 import io.debezium.schema.SchemaFactory;
 import io.debezium.schema.SchemaNameAdjuster;
@@ -81,9 +86,20 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
     private OffsetContext.Loader<PostgresOffsetContext> offsetContextLoader = null;
 
     private final ReentrantLock commitLock = new ReentrantLock();
+    private PostgresConnectorConfig connectorConfig;
+
+    @Override
+    public CdcSourceTaskContext<PostgresConnectorConfig> preStart(Configuration config) {
+
+        connectorConfig = new PostgresConnectorConfig(config);
+        this.taskContext = new PostgresTaskContext(config, connectorConfig);
+
+        return taskContext;
+    }
 
     @Override
     public ChangeEventSourceCoordinator<PostgresPartition, PostgresOffsetContext> start(Configuration config) {
+
         final PostgresConnectorConfig connectorConfig = new PostgresConnectorConfig(config);
         final TopicNamingStrategy<TableId> topicNamingStrategy = connectorConfig.getTopicNamingStrategy(CommonConnectorConfig.TOPIC_NAMING_STRATEGY);
         final SchemaNameAdjuster schemaNameAdjuster = connectorConfig.schemaNameAdjuster();
@@ -92,6 +108,11 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
         try (PostgresConnection tempConnection = new PostgresConnection(connectorConfig.getJdbcConfig(), PostgresConnection.CONNECTION_GENERAL)) {
             databaseCharset = tempConnection.getDatabaseCharset();
         }
+        catch (DebeziumException e) {
+            throw new RetriableException("Couldn't obtain encoding for database", e);
+        }
+
+        final TypeRegistry sharedTypeRegistry = PostgresConnection.createTypeRegistry(connectorConfig.getJdbcConfig());
 
         final PostgresValueConverterBuilder valueConverterBuilder = (typeRegistry) -> PostgresValueConverter.of(
                 connectorConfig,
@@ -99,7 +120,7 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
                 typeRegistry);
 
         MainConnectionProvidingConnectionFactory<PostgresConnection> connectionFactory = new DefaultMainConnectionProvidingConnectionFactory<>(
-                () -> new PostgresConnection(connectorConfig.getJdbcConfig(), valueConverterBuilder, PostgresConnection.CONNECTION_GENERAL));
+                () -> new PostgresConnection(connectorConfig.getJdbcConfig(), sharedTypeRegistry, valueConverterBuilder, PostgresConnection.CONNECTION_GENERAL));
         // Global JDBC connection used both for snapshotting and streaming.
         // Must be able to resolve datatypes.
         jdbcConnection = connectionFactory.mainConnection();
@@ -114,8 +135,12 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
         final PostgresDefaultValueConverter defaultValueConverter = jdbcConnection.getDefaultValueConverter();
         final PostgresValueConverter valueConverter = valueConverterBuilder.build(typeRegistry);
 
-        schema = new PostgresSchema(connectorConfig, defaultValueConverter, topicNamingStrategy, valueConverter);
-        this.taskContext = new PostgresTaskContext(connectorConfig, schema, topicNamingStrategy);
+        // Service providers
+        registerServiceProviders(connectorConfig.getServiceRegistry());
+
+        CustomConverterRegistry customConverterRegistry = connectorConfig.getServiceRegistry().tryGetService(CustomConverterRegistry.class);
+
+        schema = new PostgresSchema(taskContext, defaultValueConverter, topicNamingStrategy, valueConverter, customConverterRegistry);
         this.partitionProvider = new PostgresPartition.Provider(connectorConfig, config);
         this.offsetContextLoader = new PostgresOffsetContext.Loader(connectorConfig);
         final Offsets<PostgresPartition, PostgresOffsetContext> previousOffsets = getPreviousOffsets(
@@ -133,9 +158,6 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
         connectorConfig.getBeanRegistry().add(StandardBeanNames.OFFSETS, previousOffsets);
         connectorConfig.getBeanRegistry().add(StandardBeanNames.CDC_SOURCE_TASK_CONTEXT, taskContext);
 
-        // Service providers
-        registerServiceProviders(connectorConfig.getServiceRegistry());
-
         final SnapshotterService snapshotterService = connectorConfig.getServiceRegistry().tryGetService(SnapshotterService.class);
         final Snapshotter snapshotter = snapshotterService.getSnapshotter();
 
@@ -146,6 +168,14 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
 
             LOGGER.error("Failed testing connection for {} with user '{}'", beanRegistryJdbcConnection.connectionString(),
                     beanRegistryJdbcConnection.username(), e);
+        }
+
+        // Validate guardrail limits for captured tables to prevent loading excessive table schemas into memory
+        if (connectorConfig.getGuardrailCollectionsMax() <= 0) {
+            LOGGER.info("Guardrail validation skipped");
+        }
+        else {
+            validateGuardrailLimits(connectorConfig, jdbcConnection);
         }
 
         validateSchemaHistory(connectorConfig, jdbcConnection::validateLogPosition, previousOffsets, schema, snapshotter);
@@ -171,11 +201,12 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
                 throw new DebeziumException(e);
             }
 
-            queue = new ChangeEventQueue.Builder<DataChangeEvent>()
+            this.queue = new ChangeEventQueue.Builder<DataChangeEvent>()
                     .pollInterval(connectorConfig.getPollInterval())
                     .maxBatchSize(connectorConfig.getMaxBatchSize())
                     .maxQueueSize(connectorConfig.getMaxQueueSize())
                     .maxQueueSizeInBytes(connectorConfig.getMaxQueueSizeInBytes())
+                    .queueProvider(connectorConfig.getServiceRegistry().tryGetService(QueueProviderService.class).getQueueProvider())
                     .loggingContextSupplier(() -> taskContext.configureLoggingContext(CONTEXT_NAME))
                     .build();
 
@@ -198,12 +229,18 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
                     DataChangeEvent::new,
                     PostgresChangeRecordEmitter::updateSchema,
                     metadataProvider,
-                    connectorConfig.createHeartbeat(
-                            topicNamingStrategy,
-                            schemaNameAdjuster,
+                    new HeartbeatFactory<>().getScheduledHeartbeat(
+                            connectorConfig,
                             () -> new PostgresConnection(connectorConfig.getJdbcConfig(), PostgresConnection.CONNECTION_GENERAL),
                             exception -> {
                                 String sqlErrorId = exception.getSQLState();
+                                if (sqlErrorId == null) {
+                                    // The driver reported no SQL state, which typically indicates a
+                                    // connection-level failure rather than an error response from the
+                                    // server. There is nothing to classify; leave it to the caller to
+                                    // log the exception.
+                                    return;
+                                }
                                 switch (sqlErrorId) {
                                     case "57P01":
                                         // Postgres error admin_shutdown, see https://www.postgresql.org/docs/12/errcodes-appendix.html
@@ -211,10 +248,13 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
                                     case "57P03":
                                         // Postgres error cannot_connect_now, see https://www.postgresql.org/docs/12/errcodes-appendix.html
                                         throw new RetriableException("Could not execute heartbeat action query (Error: " + sqlErrorId + ")", exception);
+                                    case "42P01":
+                                        // Postgres error undefined_table, see https://www.postgresql.org/docs/12/errcodes-appendix.html
+                                        throw new DebeziumException("Could not execute heartbeat action query (Error: " + sqlErrorId + ")", exception);
                                     default:
                                         break;
                                 }
-                            }),
+                            }, queue),
                     schemaNameAdjuster,
                     signalProcessor,
                     connectorConfig.getServiceRegistry().tryGetService(DebeziumHeaderProducer.class));
@@ -265,7 +305,7 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
 
         SlotCreationResult slotCreatedInfo = null;
         if (snapshotter.shouldStream()) {
-            replicationConnection = createReplicationConnection(this.taskContext,
+            replicationConnection = createReplicationConnection(connectorConfig,
                     connectorConfig.maxRetries(), connectorConfig.retryDelay());
 
             // we need to create the slot before we start streaming if it doesn't exist
@@ -299,19 +339,45 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
             slotInfo = jdbcConnection.getReplicationSlotState(connectorConfig.slotName(), connectorConfig.plugin().getPostgresPluginName());
         }
         catch (SQLException e) {
-            LOGGER.warn("unable to load info of replication slot, Debezium will try to create the slot");
+            LOGGER.warn("unable to load info of replication slot, Debezium will try to create the slot", e);
         }
         return slotInfo;
     }
 
-    public ReplicationConnection createReplicationConnection(PostgresTaskContext taskContext, int maxRetries, Duration retryDelay)
+    protected ReplicationConnection buildReplicationConnection(PostgresConnection jdbcConnection, PostgresSchema schema, PostgresConnectorConfig connectorConfig)
+            throws SQLException {
+        final boolean dropSlotOnStop = connectorConfig.dropSlotOnStop();
+        if (dropSlotOnStop) {
+            LOGGER.warn(
+                    "Connector has enabled automated replication slot removal upon restart ({} = true). " +
+                            "This setting is not recommended for production environments, as a new replication slot " +
+                            "will be created after a connector restart, resulting in missed data change events.",
+                    PostgresConnectorConfig.DROP_SLOT_ON_STOP.name());
+        }
+        return ReplicationConnection.builder(connectorConfig)
+                .withSlot(connectorConfig.slotName())
+                .withPublication(connectorConfig.publicationName())
+                .withTableFilter(connectorConfig.getTableFilters())
+                .withPublicationAutocreateMode(connectorConfig.publicationAutocreateMode())
+                .withPlugin(connectorConfig.plugin())
+                .dropSlotOnClose(dropSlotOnStop)
+                .createFailOverSlot(connectorConfig.createFailOverSlot())
+                .streamParams(connectorConfig.streamParams())
+                .statusUpdateInterval(connectorConfig.statusUpdateInterval())
+                .withTypeRegistry(jdbcConnection.getTypeRegistry())
+                .withSchema(schema)
+                .jdbcMetadataConnection(jdbcConnection)
+                .build();
+    }
+
+    public ReplicationConnection createReplicationConnection(PostgresConnectorConfig connectorConfig, int maxRetries, Duration retryDelay)
             throws ConnectException {
         final Metronome metronome = Metronome.parker(retryDelay, Clock.SYSTEM);
         short retryCount = 0;
         ReplicationConnection replicationConnection = null;
         while (retryCount <= maxRetries) {
             try {
-                return taskContext.createReplicationConnection(jdbcConnection);
+                return buildReplicationConnection(jdbcConnection, schema, connectorConfig);
             }
             catch (SQLException ex) {
                 retryCount++;
@@ -336,16 +402,12 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
 
     @Override
     public List<SourceRecord> doPoll() throws InterruptedException {
-        final List<DataChangeEvent> records = queue.poll();
-
-        return records.stream()
-                .map(DataChangeEvent::getRecord)
-                .collect(Collectors.toList());
+        return pollRecords(queue);
     }
 
     @Override
     protected Optional<ErrorHandler> getErrorHandler() {
-        return Optional.of(errorHandler);
+        return Optional.ofNullable(errorHandler);
     }
 
     @Override
@@ -378,6 +440,10 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
 
         if (schema != null) {
             schema.close();
+        }
+
+        if (queue != null) {
+            queue.close();
         }
     }
 
@@ -432,8 +498,19 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
         }
     }
 
-    public PostgresTaskContext getTaskContext() {
-        return taskContext;
+    public PostgresSchema getSchema() {
+        return schema;
+    }
+
+    private void validateGuardrailLimits(PostgresConnectorConfig connectorConfig, PostgresConnection connection) {
+        try {
+            Set<TableId> allTableIds = connection.getAllTableIds(connectorConfig.databaseName());
+            GuardrailValidator validator = new GuardrailValidator(connectorConfig, schema);
+            validator.validate(allTableIds);
+        }
+        catch (SQLException e) {
+            throw new DebeziumException("Failed to validate guardrail limits", e);
+        }
     }
 
     private static void checkWalLevel(PostgresConnection connection, SnapshotterService snapshotterService) throws SQLException {

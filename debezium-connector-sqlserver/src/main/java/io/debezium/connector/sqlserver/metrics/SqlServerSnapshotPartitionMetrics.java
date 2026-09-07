@@ -133,6 +133,10 @@ class SqlServerSnapshotPartitionMetrics extends AbstractSqlServerPartitionMetric
         snapshotMeter.currentChunk(chunkId, chunkFrom, chunkTo, tableTo);
     }
 
+    void chunkProgress(TableId tableId, Long totalChunks, Long completedChunks) {
+        snapshotMeter.chunkProgress(tableId, totalChunks, completedChunks);
+    }
+
     @Override
     public String getChunkId() {
         return snapshotMeter.getChunkId();
@@ -156,6 +160,16 @@ class SqlServerSnapshotPartitionMetrics extends AbstractSqlServerPartitionMetric
     @Override
     public String getTableTo() {
         return snapshotMeter.getTableTo();
+    }
+
+    @Override
+    public Map<String, Long> getTableChunkCounts() {
+        return snapshotMeter.getTableChunkCounts();
+    }
+
+    @Override
+    public Map<String, Long> getTableChunksCompletedCounts() {
+        return snapshotMeter.getTableChunksCompletedCounts();
     }
 
     @Override

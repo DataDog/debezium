@@ -4,7 +4,7 @@
     <parent>
         <groupId>io.debezium</groupId>
         <artifactId>debezium-parent</artifactId>
-        <version>3.2.4.Final</version>
+        <version>3.6.2.Final</version>
         <relativePath>../debezium-parent/pom.xml</relativePath>
     </parent>
     <modelVersion>4.0.0</modelVersion>
@@ -37,10 +37,10 @@
             <version>${project.version}</version>
         </dependency>
 
-        <!-- Debezium core (provides TableSchemaBuilder, Envelope, etc.) -->
+        <!-- Debezium connector common (provides TableSchemaBuilder, Envelope, etc.) -->
         <dependency>
             <groupId>io.debezium</groupId>
-            <artifactId>debezium-core</artifactId>
+            <artifactId>debezium-connector-common</artifactId>
         </dependency>
 
         <!-- Kafka Connect API — compile scope (standalone app, not a KC plugin) -->
@@ -111,17 +111,17 @@
         </dependency>
         <dependency>
             <groupId>org.testcontainers</groupId>
-            <artifactId>postgresql</artifactId>
+            <artifactId>testcontainers-postgresql</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.testcontainers</groupId>
-            <artifactId>junit-jupiter</artifactId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.testcontainers</groupId>
-            <artifactId>kafka</artifactId>
+            <artifactId>testcontainers-kafka</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

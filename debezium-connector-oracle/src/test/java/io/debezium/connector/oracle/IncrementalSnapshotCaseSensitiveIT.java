@@ -6,17 +6,16 @@
 package io.debezium.connector.oracle;
 
 import java.sql.SQLException;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 
 import io.debezium.config.Configuration;
 import io.debezium.connector.oracle.util.TestHelper;
 import io.debezium.jdbc.JdbcConnection;
-import io.debezium.junit.SkipTestRule;
 import io.debezium.pipeline.source.snapshot.incremental.AbstractIncrementalSnapshotTest;
 import io.debezium.relational.RelationalDatabaseConnectorConfig;
 import io.debezium.relational.history.SchemaHistory;
@@ -31,11 +30,8 @@ public class IncrementalSnapshotCaseSensitiveIT extends AbstractIncrementalSnaps
 
     private OracleConnection connection;
 
-    @Rule
-    public SkipTestRule skipRule = new SkipTestRule();
-
-    @Before
-    public void before() throws Exception {
+    @BeforeEach
+    void before() throws Exception {
         connection = TestHelper.testConnection();
 
         TestHelper.dropTable(connection, "a");
@@ -44,6 +40,8 @@ public class IncrementalSnapshotCaseSensitiveIT extends AbstractIncrementalSnaps
         connection.execute("CREATE TABLE a (\"Pk\" numeric(9,0) primary key, aa numeric(9,0))");
         connection.execute("CREATE TABLE b (\"Pk\" numeric(9,0) primary key, aa numeric(9,0))");
         connection.execute("CREATE TABLE a42 (pk1 numeric(9,0), pk2 numeric(9,0), pk3 numeric(9,0), pk4 numeric(9,0), aa numeric(9,0))");
+        TestHelper.streamTable(connection, "a");
+        TestHelper.streamTable(connection, "b");
         TestHelper.streamTable(connection, "a42");
 
         // todo: creates signal table in the PDB, do we want it to be in the CDB?
@@ -57,8 +55,8 @@ public class IncrementalSnapshotCaseSensitiveIT extends AbstractIncrementalSnaps
         Testing.Files.delete(TestHelper.SCHEMA_HISTORY_PATH);
     }
 
-    @After
-    public void after() throws Exception {
+    @AfterEach
+    void after() throws Exception {
         stopConnector();
         if (connection != null) {
             TestHelper.dropTable(connection, "a");
@@ -218,5 +216,14 @@ public class IncrementalSnapshotCaseSensitiveIT extends AbstractIncrementalSnaps
     @Override
     protected String server() {
         return TestHelper.SERVER_NAME;
+    }
+
+    @Override
+    protected Duration getWaitDurationInSeconds() {
+        if (TestHelper.isXStream()) {
+            // XStream waits are more temperamental, give it more time
+            return Duration.ofMinutes(5);
+        }
+        return super.getWaitDurationInSeconds();
     }
 }

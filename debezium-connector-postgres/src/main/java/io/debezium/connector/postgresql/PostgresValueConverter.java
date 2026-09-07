@@ -54,11 +54,13 @@ import com.fasterxml.jackson.core.JsonGenerator;
 import io.debezium.config.CommonConnectorConfig.BinaryHandlingMode;
 import io.debezium.connector.postgresql.PostgresConnectorConfig.HStoreHandlingMode;
 import io.debezium.connector.postgresql.PostgresConnectorConfig.IntervalHandlingMode;
+import io.debezium.connector.postgresql.connection.DateTimeFormat;
 import io.debezium.connector.postgresql.data.Ltree;
 import io.debezium.connector.postgresql.proto.PgProto;
 import io.debezium.data.Bits;
 import io.debezium.data.Json;
 import io.debezium.data.SpecialValueDecimal;
+import io.debezium.data.TsVector;
 import io.debezium.data.Uuid;
 import io.debezium.data.VariableScaleDecimal;
 import io.debezium.data.geometry.Geography;
@@ -96,6 +98,7 @@ public class PostgresValueConverter extends JdbcValueConverters {
     public static final OffsetDateTime POSITIVE_INFINITY_OFFSET_DATE_TIME = OffsetDateTime.ofInstant(Conversions.toInstantFromMillis(PGStatement.DATE_POSITIVE_INFINITY),
             ZoneOffset.UTC);
     public static final LocalDate POSITIVE_INFINITY_LOCAL_DATE = LocalDate.parse("-5877611-06-21");
+    public static final String POSITIVE_INFINITY_TIMESTAMP_PG_STRING = "infinity";
 
     public static final Date NEGATIVE_INFINITY_DATE = new Date(PGStatement.DATE_NEGATIVE_INFINITY);
     public static final Timestamp NEGATIVE_INFINITY_TIMESTAMP = new Timestamp(PGStatement.DATE_NEGATIVE_INFINITY);
@@ -104,6 +107,7 @@ public class PostgresValueConverter extends JdbcValueConverters {
     public static final OffsetDateTime NEGATIVE_INFINITY_OFFSET_DATE_TIME = OffsetDateTime.ofInstant(Conversions.toInstantFromMillis(PGStatement.DATE_NEGATIVE_INFINITY),
             ZoneOffset.UTC);
     public static final LocalDate NEGATIVE_INFINITY_LOCAL_DATE = LocalDate.parse("-5877611-06-22");
+    public static final String NEGATIVE_INFINITY_TIMESTAMP_PG_STRING = "-infinity";
 
     /**
      * Variable scale decimal/numeric is defined by metadata
@@ -233,6 +237,8 @@ public class PostgresValueConverter extends JdbcValueConverters {
                 return numericSchema(column);
             case PgOid.BYTEA:
                 return binaryMode.getSchema();
+            case PgOid.TSVECTOR_OID:
+                return TsVector.builder();
             case PgOid.INT2_ARRAY:
                 return SchemaBuilder.array(SchemaBuilder.OPTIONAL_INT16_SCHEMA);
             case PgOid.INT4_ARRAY:
@@ -336,7 +342,6 @@ public class PostgresValueConverter extends JdbcValueConverters {
                 }
 
                 final PostgresType resolvedType = typeRegistry.get(oidValue);
-
                 if (resolvedType.isEnumType()) {
                     return io.debezium.data.Enum.builder(Strings.join(",", resolvedType.getEnumValues()));
                 }
@@ -454,6 +459,7 @@ public class PostgresValueConverter extends JdbcValueConverters {
             case PgOid.INT4RANGE_OID:
             case PgOid.NUM_RANGE_OID:
             case PgOid.INT8RANGE_OID:
+            case PgOid.TSVECTOR_OID:
             case PgOid.BPCHAR:
                 return data -> convertString(column, fieldDefn, data);
             case PgOid.POINT:
@@ -549,6 +555,11 @@ public class PostgresValueConverter extends JdbcValueConverters {
                 final PostgresType resolvedType = typeRegistry.get(oidValue);
                 if (resolvedType.isArrayType()) {
                     return createArrayConverter(column, fieldDefn);
+                }
+
+                // Enum types don't have a JDBC converter, but we need to return a converter that passes through the string value
+                if (resolvedType.isEnumType()) {
+                    return data -> convertString(column, fieldDefn, data);
                 }
 
                 final ValueConverter jdbcConverter = super.converter(column, fieldDefn);
@@ -824,11 +835,35 @@ public class PostgresValueConverter extends JdbcValueConverters {
     }
 
     @Override
-    protected Object convertBits(Column column, Field fieldDefn, Object data, int numBytes) {
-        if (data instanceof PGobject) {
-            // returned by the JDBC driver
-            data = ((PGobject) data).getValue();
+    protected ValueConverter convertBits(Column column, Field fieldDefn) {
+        // For VARBIT(1), we need special handling because JDBC returns PGobject
+        if (column.nativeType() == PgOid.VARBIT && column.length() == 1) {
+            return data -> {
+                if (data instanceof PGobject pgObject) {
+                    data = pgObject.getValue();
+                }
+                if (data instanceof String str) {
+                    return Integer.valueOf(str, 2) == 0 ? Boolean.FALSE : Boolean.TRUE;
+                }
+                return convertBit(column, fieldDefn, data);
+            };
         }
+        return super.convertBits(column, fieldDefn);
+    }
+
+    @Override
+    protected Object convertBits(Column column, Field fieldDefn, Object data, int numBytes) {
+        if (data instanceof PGobject pgObject) {
+            // returned by the JDBC driver
+            data = pgObject.getValue();
+        }
+
+        // For VARBIT(1), convert to boolean just like BIT(1)
+        if (column.length() == 1 && data instanceof String str) {
+            // Return boolean directly
+            return Integer.valueOf(str, 2) == 0 ? Boolean.FALSE : Boolean.TRUE;
+        }
+
         if (data instanceof String) {
             String dataStr = (String) data;
             BitSet bitset = new BitSet(dataStr.length());
@@ -935,6 +970,14 @@ public class PostgresValueConverter extends JdbcValueConverters {
 
     @Override
     protected Object convertTimestampWithZone(Column column, Field fieldDefn, Object data) {
+        if (data instanceof String str) {
+            if (POSITIVE_INFINITY_TIMESTAMP_PG_STRING.equals(str) || NEGATIVE_INFINITY_TIMESTAMP_PG_STRING.equals(str)) {
+                return str;
+            }
+
+            data = DateTimeFormat.get().timestampWithTimeZoneToOffsetDateTime(str).withOffsetSameInstant(ZoneOffset.UTC);
+        }
+
         if (data instanceof java.util.Date) {
             // any Date like subclasses will be given to us by the JDBC driver, which uses the local VM TZ, so we need to go
             // back to GMT
@@ -942,10 +985,10 @@ public class PostgresValueConverter extends JdbcValueConverters {
         }
 
         if (POSITIVE_INFINITY_OFFSET_DATE_TIME.equals(data)) {
-            return "infinity";
+            return POSITIVE_INFINITY_TIMESTAMP_PG_STRING;
         }
         else if (NEGATIVE_INFINITY_OFFSET_DATE_TIME.equals(data)) {
-            return "-infinity";
+            return NEGATIVE_INFINITY_TIMESTAMP_PG_STRING;
         }
         else if (data instanceof OffsetDateTime) {
             data = ((OffsetDateTime) data).toZonedDateTime();
@@ -1160,6 +1203,16 @@ public class PostgresValueConverter extends JdbcValueConverters {
         if (data == null) {
             return null;
         }
+        if (data instanceof String s) {
+            return switch (s) {
+                case POSITIVE_INFINITY_TIMESTAMP_PG_STRING -> POSITIVE_INFINITY_LOCAL_DATE_TIME;
+                case NEGATIVE_INFINITY_TIMESTAMP_PG_STRING -> NEGATIVE_INFINITY_LOCAL_DATE_TIME;
+                default -> {
+                    final Instant instant = DateTimeFormat.get().timestampToInstant(s);
+                    yield LocalDateTime.ofInstant(instant, ZoneOffset.UTC);
+                }
+            };
+        }
         if (!(data instanceof Timestamp)) {
             return data;
         }
@@ -1175,6 +1228,33 @@ public class PostgresValueConverter extends JdbcValueConverters {
         final Instant instant = timestamp.toInstant();
 
         return LocalDateTime.ofInstant(instant, ZoneOffset.systemDefault());
+    }
+
+    @Override
+    protected Object convertTimestampToEpochNanos(Column column, Field fieldDefn, Object data) {
+        if (data == null) {
+            return null;
+        }
+
+        if (data instanceof Instant instant) {
+            if (POSITIVE_INFINITY_INSTANT.equals(instant)) {
+                return Long.MAX_VALUE;
+            }
+            else if (NEGATIVE_INFINITY_INSTANT.equals(instant)) {
+                return Long.MIN_VALUE;
+            }
+        }
+
+        if (data instanceof LocalDateTime localDateTime) {
+            if (POSITIVE_INFINITY_LOCAL_DATE_TIME.equals(localDateTime)) {
+                return Long.MAX_VALUE;
+            }
+            else if (NEGATIVE_INFINITY_LOCAL_DATE_TIME.equals(localDateTime)) {
+                return Long.MIN_VALUE;
+            }
+        }
+
+        return super.convertTimestampToEpochNanos(column, fieldDefn, data);
     }
 
     @Override

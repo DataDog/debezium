@@ -7,6 +7,7 @@ package io.debezium.connector.jdbc.dialect.mysql;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Types;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
@@ -23,7 +24,9 @@ import org.hibernate.SessionFactory;
 import org.hibernate.StatelessSession;
 import org.hibernate.dialect.Dialect;
 import org.hibernate.dialect.MySQLDialect;
+import org.hibernate.engine.jdbc.Size;
 import org.hibernate.exception.LockAcquisitionException;
+import org.hibernate.exception.LockTimeoutException;
 
 import io.debezium.connector.jdbc.JdbcSinkConnectorConfig;
 import io.debezium.connector.jdbc.JdbcSinkRecord;
@@ -32,6 +35,7 @@ import io.debezium.connector.jdbc.dialect.DatabaseDialectProvider;
 import io.debezium.connector.jdbc.dialect.GeneralDatabaseDialect;
 import io.debezium.connector.jdbc.dialect.SqlStatementBuilder;
 import io.debezium.connector.jdbc.relational.TableDescriptor;
+import io.debezium.connector.jdbc.type.JdbcType;
 import io.debezium.sink.field.FieldDescriptor;
 import io.debezium.time.ZonedTimestamp;
 import io.debezium.util.Strings;
@@ -105,6 +109,7 @@ public class MySqlDatabaseDialect extends GeneralDatabaseDialect {
         super.registerTypes();
 
         registerType(BooleanType.INSTANCE);
+        registerType(BigIntUnsignedType.INSTANCE);
         registerType(BitType.INSTANCE);
         registerType(BytesType.INSTANCE);
         registerType(EnumType.INSTANCE);
@@ -122,6 +127,27 @@ public class MySqlDatabaseDialect extends GeneralDatabaseDialect {
 
         registerType(FloatVectorType.INSTANCE);
         registerType(DoubleVectorType.INSTANCE);
+    }
+
+    @Override
+    public JdbcType getSchemaType(Schema schema) {
+        if (BigIntUnsignedType.INSTANCE.matchesSourceColumnType(schema)) {
+            return BigIntUnsignedType.INSTANCE;
+        }
+        return super.getSchemaType(schema);
+    }
+
+    @Override
+    public String getJdbcTypeName(int jdbcType, Size size) {
+        // Hibernate 7.1 began to map CHAR(n) to VARCHAR(n) instead - this restores the logic
+        switch (jdbcType) {
+            case Types.CHAR:
+            case Types.NCHAR:
+                if (size.getLength() != null && size.getLength() > 0) {
+                    return "char(" + size.getLength() + ")";
+                }
+        }
+        return super.getJdbcTypeName(jdbcType, size);
     }
 
     @Override
@@ -203,7 +229,8 @@ public class MySqlDatabaseDialect extends GeneralDatabaseDialect {
     public Set<Class<? extends Exception>> getCommunicationExceptions() {
         Set<Class<? extends Exception>> exceptions = super.getCommunicationExceptions();
         exceptions.addAll(
-                Set.of(LockAcquisitionException.class,
+                Set.of(LockTimeoutException.class,
+                        LockAcquisitionException.class,
                         PessimisticLockException.class));
         return Collections.unmodifiableSet(exceptions);
     }
