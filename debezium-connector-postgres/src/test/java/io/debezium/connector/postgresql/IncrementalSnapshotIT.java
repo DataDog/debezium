@@ -511,6 +511,78 @@ public class IncrementalSnapshotIT extends AbstractIncrementalSnapshotTest<Postg
         assertThat(data.get(0).valueSchema().field("gencol")).isNull();
     }
 
+    @Test
+    @FixFor("DBZ-1329")
+    public void snapshotNewTableWithoutTableIncludeList() throws Exception {
+        // Testing.Print.enable();
+
+        // Populate the default table
+        populateTable();
+        // Start connector without an explicit table.include.list
+        startConnector();
+        waitForConnectorToStart();
+
+        // Create a completely new table at runtime
+        try (JdbcConnection connection = databaseConnection()) {
+            connection.execute("CREATE TABLE s1.tab2 (pk SERIAL, aa integer, PRIMARY KEY(pk));");
+            connection.execute("INSERT INTO s1.tab2 (aa) VALUES (1);");
+        }
+
+        // Trigger incremental snapshot for the new table
+        sendAdHocSnapshotSignal("s1.tab2");
+
+        // Verify the incremental snapshot message is properly generated without throwing NullPointerException
+        final int expectedRecordCount = 1;
+        final Map<Integer, Integer> dbChanges = consumeMixedWithIncrementalSnapshot(
+                expectedRecordCount,
+                x -> true,
+                k -> k.getInt32("pk"),
+                record -> ((Struct) record.value()).getStruct("after").getInt32("aa"),
+                "test_server.s1.tab2",
+                null);
+
+        assertThat(dbChanges).contains(entry(1, 1));
+    }
+
+    @Test
+    @FixFor("DBZ-4350")
+    @SkipWhenDecoderPluginNameIsNot(value = DecoderPluginName.PGOUTPUT, reason = "Only pgoutput strips generated columns from the schema model")
+    public void snapshotWithGeneratedColumnNoExcludeList() throws Exception {
+        // Testing.Print.enable();
+
+        final String SETUP_TABLES = "CREATE TABLE s1.gencol_no_exclude ("
+                + "pk int, "
+                + "gencol varchar(10) GENERATED ALWAYS AS ('aa') STORED, "
+                + "aa integer, "
+                + "bb varchar(2), "
+                + "PRIMARY KEY(pk));";
+        TestHelper.execute(SETUP_TABLES);
+
+        startConnector(x -> x.with(PostgresConnectorConfig.TABLE_INCLUDE_LIST, "s1.gencol_no_exclude"));
+        waitForConnectorToStart();
+
+        try (JdbcConnection connection = databaseConnection()) {
+            connection.execute("INSERT INTO s1.gencol_no_exclude (pk, aa, bb) VALUES (1, 1, 'a')");
+        }
+
+        var record = consumeRecord();
+        assertThat(record.valueSchema().field("gencol")).isNull();
+
+        sendAdHocSnapshotSignal("s1.gencol_no_exclude");
+
+        final var topicName = "test_server.s1.gencol_no_exclude";
+        consumeMixedWithIncrementalSnapshot(1, topicName);
+
+        try (JdbcConnection connection = databaseConnection()) {
+            connection.execute("INSERT INTO s1.gencol_no_exclude (pk, aa, bb) VALUES (2, 2, 'b')");
+        }
+
+        final var records = consumeRecordsByTopicUntil((cnt, r) -> r.topic().equals(topicName));
+        final var data = records.recordsForTopic(topicName);
+        assertThat(data).hasSize(1);
+        assertThat(data.get(0).valueSchema().field("gencol")).isNull();
+    }
+
     protected void populate4PkTable() throws SQLException {
         try (JdbcConnection connection = databaseConnection()) {
             populate4PkTable(connection, "s1.a4");
