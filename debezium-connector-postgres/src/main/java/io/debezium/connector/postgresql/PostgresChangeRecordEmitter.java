@@ -19,7 +19,6 @@ import java.util.stream.Collectors;
 
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.errors.ConnectException;
-import org.postgresql.core.BaseConnection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -180,7 +179,7 @@ public class PostgresChangeRecordEmitter extends RelationalChangeRecordEmitter<P
 
             int position = getPosition(columnName, table, values);
             if (position != -1) {
-                Object value = column.getValue(() -> (BaseConnection) connection.connection(), connectorConfig.includeUnknownDatatypes());
+                Object value = column.getValue(connection::pgConnection, connectorConfig.includeUnknownDatatypes());
                 if (sourceOfToasted) {
                     cachedOldToastedValues.put(columnName, value);
                 }

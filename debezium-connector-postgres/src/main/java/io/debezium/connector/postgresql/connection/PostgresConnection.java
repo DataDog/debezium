@@ -7,6 +7,7 @@
 package io.debezium.connector.postgresql.connection;
 
 import java.nio.charset.Charset;
+import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -83,9 +84,17 @@ public class PostgresConnection extends JdbcConnection {
 
     private static final String URL_PATTERN = "jdbc:postgresql://${" + JdbcConfiguration.HOSTNAME + "}:${"
             + JdbcConfiguration.PORT + "}/${" + JdbcConfiguration.DATABASE + "}";
-    protected static final ConnectionFactory FACTORY = JdbcConnection.patternBasedFactory(URL_PATTERN,
-            org.postgresql.Driver.class.getName(),
-            PostgresConnection.class.getClassLoader(), JdbcConfiguration.PORT.withDefault(PostgresConnectorConfig.PORT.defaultValueAsString()));
+    protected static final ConnectionFactory FACTORY = config -> {
+        String driver = config.getString("jdbc.driver", org.postgresql.Driver.class.getName());
+        String url = config.getString("jdbc.url", URL_PATTERN);
+        JdbcConfiguration driverConfig = JdbcConfiguration.adapt(config.edit().without("jdbc.driver").without("jdbc.url").build());
+        Connection connection = JdbcConnection.patternBasedFactory(url, driver, PostgresConnection.class.getClassLoader(),
+                JdbcConfiguration.PORT.withDefault(PostgresConnectorConfig.PORT.defaultValueAsString())).connect(driverConfig);
+        if (connection == null) {
+            throw new SQLException("The configured JDBC driver does not accept the configured JDBC URL");
+        }
+        return connection;
+    };
 
     /**
      * Obtaining a replication slot may fail if there's a pending transaction. We're retrying to get a slot for 30 min.
@@ -159,6 +168,7 @@ public class PostgresConnection extends JdbcConnection {
     static JdbcConfiguration addDefaultSettings(JdbcConfiguration configuration, String connectionUsage) {
         // we require Postgres 9.4 as the minimum server version since that's where logical replication was first introduced
         return JdbcConfiguration.adapt(configuration.edit()
+                .withDefault(JdbcConfiguration.PORT.name(), PostgresConnectorConfig.PORT.defaultValueAsString())
                 .with("assumeMinServerVersion", "9.4")
                 .with("ApplicationName", connectionUsage)
                 .build());
@@ -170,7 +180,7 @@ public class PostgresConnection extends JdbcConnection {
      * @return a {@code String} where the variables in {@code urlPattern} are replaced with values from the configuration
      */
     public String connectionString() {
-        return connectionString(URL_PATTERN);
+        return connectionString(config().getString("jdbc.url", URL_PATTERN));
     }
 
     /**
@@ -354,10 +364,9 @@ public class PostgresConnection extends JdbcConnection {
     protected ServerInfo.ReplicationSlot queryForSlot(String slotName, String database, String pluginName,
                                                       ResultSetMapper<ServerInfo.ReplicationSlot> map)
             throws SQLException {
-        return prepareQueryAndMap("select * from pg_replication_slots where slot_name = ? and database = ? and plugin = ?", statement -> {
+        return prepareQueryAndMap("select * from pg_replication_slots where slot_name = ? and database = pg_catalog.current_database() and plugin = ?", statement -> {
             statement.setString(1, slotName);
-            statement.setString(2, database);
-            statement.setString(3, pluginName);
+            statement.setString(2, pluginName);
         }, map);
     }
 
@@ -596,7 +605,7 @@ public class PostgresConnection extends JdbcConnection {
 
     public Charset getDatabaseCharset() {
         try {
-            return Charset.forName(((BaseConnection) connection()).getEncoding().name());
+            return Charset.forName(pgConnection().getEncoding().name());
         }
         catch (SQLException e) {
             throw new DebeziumException("Couldn't obtain encoding for database " + database(), e);
@@ -605,11 +614,15 @@ public class PostgresConnection extends JdbcConnection {
 
     public TimestampUtils getTimestampUtils() {
         try {
-            return ((PgConnection) this.connection()).getTimestampUtils();
+            return connection().unwrap(PgConnection.class).getTimestampUtils();
         }
         catch (SQLException e) {
             throw new DebeziumException("Couldn't get timestamp utils from underlying connection", e);
         }
+    }
+
+    public BaseConnection pgConnection() throws SQLException {
+        return connection().unwrap(BaseConnection.class);
     }
 
     private static void validateServerVersion(Statement statement) throws SQLException {

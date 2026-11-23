@@ -232,7 +232,7 @@ public class PgOutputMessageDecoder extends AbstractMessageDecoder {
                 .withSlotOption("publication_names", decoderContext.getConfig().publicationName());
 
         // DBZ-4374 Use enum once the driver got updated
-        if (hasMinimumServerVersion.apply(140000)) {
+        if (hasMinimumServerVersion.apply(140000) && !decoderContext.getConfig().isReplicationConnectionProxy()) {
             builder = builder.withSlotOption("messages", true);
         }
 

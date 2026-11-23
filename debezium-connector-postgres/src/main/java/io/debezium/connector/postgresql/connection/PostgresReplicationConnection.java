@@ -132,6 +132,9 @@ public class PostgresReplicationConnection extends JdbcConnection implements Rep
         this.slotCreationInfo = null;
         this.hasInitedSlot = false;
         this.replicaIdentityMapper = config.replicaIdentityMapper();
+        if (config.isReplicationConnectionProxy()) {
+            LOGGER.info("Using pre-provisioned replication resources through a restricted proxy; logical decoding message events are disabled");
+        }
     }
 
     private static JdbcConfiguration addDefaultSettings(JdbcConfiguration configuration) {
@@ -151,6 +154,21 @@ public class PostgresReplicationConnection extends JdbcConnection implements Rep
     }
 
     protected void initPublication() {
+        if (connectorConfig.isReplicationConnectionProxy()) {
+            try {
+                jdbcConnection.prepareQuery("SELECT 1 FROM pg_catalog.pg_publication WHERE pubname = ?",
+                        statement -> statement.setString(1, publicationName), rs -> {
+                            if (!rs.next()) {
+                                throw new ConnectException(
+                                        "Publication '" + publicationName + "' must be provisioned before starting the connector through a replication proxy");
+                            }
+                        });
+            }
+            catch (SQLException e) {
+                throw new JdbcConnectionException(e);
+            }
+            return;
+        }
         if (PostgresConnectorConfig.LogicalDecoder.PGOUTPUT.equals(plugin)) {
             LOGGER.info("Initializing PgOutput logical decoder publication");
             try {
@@ -612,6 +630,9 @@ public class PostgresReplicationConnection extends JdbcConnection implements Rep
 
     @Override
     public Optional<SlotCreationResult> createReplicationSlot() throws SQLException {
+        if (connectorConfig.isReplicationConnectionProxy()) {
+            throw new ConnectException("Replication slot '" + slotName + "' must be provisioned before starting the connector through a replication proxy");
+        }
         // note that some of these options are only supported in Postgres 9.4+, additionally
         // the options are not yet exported by the jdbc api wrapper, therefore, we just do
         // this ourselves but eventually this should be moved back to the jdbc API
@@ -696,7 +717,7 @@ public class PostgresReplicationConnection extends JdbcConnection implements Rep
     }
 
     protected BaseConnection pgConnection() throws SQLException {
-        return (BaseConnection) connection(false);
+        return connection(false).unwrap(BaseConnection.class);
     }
 
     private SlotCreationResult parseSlotCreation(ResultSet rs) {
@@ -935,7 +956,7 @@ public class PostgresReplicationConnection extends JdbcConnection implements Rep
         catch (Throwable e) {
             LOGGER.error("Unexpected error while closing Postgres connection", e);
         }
-        if (dropSlotOnClose && dropSlot) {
+        if (dropSlotOnClose && dropSlot && !connectorConfig.isReplicationConnectionProxy()) {
             // we're dropping the replication slot via a regular - i.e. not a replication - connection
             try (PostgresConnection connection = new PostgresConnection(connectorConfig.getJdbcConfig(), PostgresConnection.CONNECTION_DROP_SLOT)) {
                 connection.dropReplicationSlot(slotName);

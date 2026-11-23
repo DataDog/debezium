@@ -19,7 +19,6 @@ import java.util.Map;
 import java.util.Set;
 
 import org.apache.kafka.connect.errors.ConnectException;
-import org.postgresql.core.BaseConnection;
 import org.postgresql.core.TypeInfo;
 import org.postgresql.jdbc.PgDatabaseMetaData;
 import org.slf4j.Logger;
@@ -573,6 +572,6 @@ public class TypeRegistry {
     }
 
     private static TypeInfo getTypeInfo(PostgresConnection connection) throws SQLException {
-        return ((BaseConnection) connection.connection()).getTypeInfo();
+        return connection.pgConnection().getTypeInfo();
     }
 }

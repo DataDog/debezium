@@ -271,6 +271,10 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
             // we need to create the slot before we start streaming if it doesn't exist
             // otherwise we can't stream back changes happening while the snapshot is taking place
             if (slotInfo == null) {
+                if (connectorConfig.isReplicationConnectionProxy()) {
+                    throw new ConnectException(
+                            "Replication slot '" + connectorConfig.slotName() + "' must be provisioned before starting the connector through a replication proxy");
+                }
                 if (connectorConfig.isReadOnlyConnection()) {
                     LOGGER.warn("Connector is configured to be in read-only mode but replication slot was not found.\n" +
                             "The attempt to create it can fail. Please check you configuration in case.");
@@ -299,6 +303,9 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
             slotInfo = jdbcConnection.getReplicationSlotState(connectorConfig.slotName(), connectorConfig.plugin().getPostgresPluginName());
         }
         catch (SQLException e) {
+            if (connectorConfig.isReplicationConnectionProxy()) {
+                throw new ConnectException("Unable to read the pre-provisioned replication slot", e);
+            }
             LOGGER.warn("unable to load info of replication slot, Debezium will try to create the slot");
         }
         return slotInfo;
