@@ -3171,6 +3171,34 @@ If the publication already exists, either for all tables or configured with a su
 |No default
 |Password to use when connecting to the PostgreSQL database server.
 
+|[[postgresql-property-database-jdbc-driver]]<<postgresql-property-database-jdbc-driver, `+database.jdbc.driver+`>>
+|`org.postgresql.Driver`
+|JDBC driver class to load at connector startup for all SQL and replication connections.
+A wrapper driver must use the same pgjdbc classes as the connector and expose `org.postgresql.core.BaseConnection` and `org.postgresql.jdbc.PgConnection` through JDBC `unwrap()`.
+Install the wrapper driver and its dependencies in the connector's plugin directory; this option does not install them.
+The connector retains the wrapper for SQL operations and connection lifecycle management.
+
+|[[postgresql-property-database-jdbc-url]]<<postgresql-property-database-jdbc-url, `+database.jdbc.url+`>>
+|`jdbc:postgresql://${hostname}:${port}/${dbname}`
+|Optional JDBC URL or URL pattern accepted by the configured driver.
+The connector substitutes `${hostname}`, `${port}`, and `${dbname}` from the database settings.
+Continue to provide the required `database.hostname`, `database.user`, and `database.dbname` settings.
+Pass credentials and driver options through properties rather than embedding secrets in this URL, which can appear in logs.
+The driver must honor connection-specific properties, especially `replication=database` and `preferQueryMode=simple`, without sharing a physical connection between SQL and replication traffic.
+
+|[[postgresql-property-replication-connection-proxy]]<<postgresql-property-replication-connection-proxy, `+replication.connection.proxy+`>>
+|`false`
+|Enables a restricted replication-proxy path with externally provisioned resources.
+Requires `plugin.name=pgoutput`, `publication.autocreate.mode=disabled`, `slot.drop.on.stop=false`, `slot.failover=false`, and `slot.seek.to.known.offset.on.start=false`.
+Do not configure `replica.identity.autoset.values` or `slot.stream.params` in this mode.
+The operator must provision the slot, publication, replica identities, table grants, and any heartbeat or signaling objects before startup.
+Missing resources cause startup to fail; the connector does not create or drop slots or publications.
+Publication checks use the ordinary SQL connection, and the streaming connection sends only `IDENTIFY_SYSTEM` and `START_REPLICATION` before entering replication streaming.
+The proxy, not the SQL login role, is responsible for authorizing replication access.
+Snapshots, table-based signals, heartbeats, WAL decoding, and offset acknowledgments use the existing connector paths and require the corresponding SQL permissions and proxy transaction semantics.
+Logical decoding message events are not requested in this mode because PostgreSQL does not scope them to the publication.
+Changing the source database's physical placement still requires a separate slot and offset migration procedure.
+
 |[[postgresql-property-database-dbname]]<<postgresql-property-database-dbname, `+database.dbname+`>>
 |No default
 |The name of the PostgreSQL database from which to stream the changes.

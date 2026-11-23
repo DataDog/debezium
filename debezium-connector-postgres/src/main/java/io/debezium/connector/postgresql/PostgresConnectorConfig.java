@@ -16,6 +16,7 @@ import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.common.config.ConfigDef.Importance;
 import org.apache.kafka.common.config.ConfigDef.Type;
 import org.apache.kafka.common.config.ConfigDef.Width;
+import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.config.ConfigValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -621,6 +622,32 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
     public static final Field PORT = RelationalDatabaseConnectorConfig.PORT
             .withDefault(DEFAULT_PORT);
 
+    public static final Field JDBC_DRIVER = Field.create("database.jdbc.driver")
+            .withDisplayName("JDBC driver class")
+            .withType(Type.STRING)
+            .withGroup(Field.createGroupEntry(Field.Group.CONNECTION_ADVANCED, 2))
+            .withDefault("org.postgresql.Driver")
+            .withImportance(Importance.LOW)
+            .withValidation(Field::isRequired)
+            .withDescription("JDBC driver class used for all SQL and replication connections. The driver must expose pgjdbc connections through JDBC unwrap.");
+
+    public static final Field JDBC_URL = Field.create("database.jdbc.url")
+            .withDisplayName("JDBC URL")
+            .withType(Type.STRING)
+            .withGroup(Field.createGroupEntry(Field.Group.CONNECTION_ADVANCED, 3))
+            .withImportance(Importance.LOW)
+            .withDescription("Optional JDBC URL or URL pattern for the configured driver. Supports ${hostname}, ${port}, and ${dbname} placeholders.");
+
+    public static final Field REPLICATION_CONNECTION_PROXY = Field.create("replication.connection.proxy")
+            .withDisplayName("Replication through a restricted proxy")
+            .withType(Type.BOOLEAN)
+            .withGroup(Field.createGroupEntry(Field.Group.CONNECTION_ADVANCED_REPLICATION, 14))
+            .withDefault(false)
+            .withImportance(Importance.LOW)
+            .withValidation(Field::isBoolean, PostgresConnectorConfig::validateReplicationProxy)
+            .withDescription("Use pre-provisioned pgoutput resources and only replication commands on the streaming connection. "
+                    + "Requires publication.autocreate.mode=disabled and disables connector-side slot management and logical decoding messages.");
+
     public static final Field PLUGIN_NAME = Field.create("plugin.name")
             .withDisplayName("Plugin")
             .withGroup(Field.createGroupEntry(Field.Group.CONNECTION_ADVANCED_REPLICATION, 0))
@@ -1218,6 +1245,13 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
         this.readOnlyConnection = config.getBoolean(READ_ONLY_CONNECTION);
         this.publishViaPartitionRoot = config.getBoolean(PUBLISH_VIA_PARTITION_ROOT);
         this.lsnFlushTimeoutAction = LsnFlushTimeoutAction.parse(config.getString(LSN_FLUSH_TIMEOUT_ACTION));
+        validateReplicationProxy(config, REPLICATION_CONNECTION_PROXY, (field, value, message) -> {
+            throw new ConfigException(field.name(), value, message);
+        });
+    }
+
+    public boolean isReplicationConnectionProxy() {
+        return getConfig().getBoolean(REPLICATION_CONNECTION_PROXY);
     }
 
     protected String hostname() {
@@ -1377,6 +1411,9 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
                     PASSWORD,
                     DATABASE_NAME,
                     QUERY_TIMEOUT_MS,
+                    JDBC_DRIVER,
+                    JDBC_URL,
+                    REPLICATION_CONNECTION_PROXY,
                     PLUGIN_NAME,
                     SLOT_NAME,
                     PUBLICATION_NAME,
@@ -1432,6 +1469,25 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
 
     public static ConfigDef configDef() {
         return CONFIG_DEFINITION.configDef();
+    }
+
+    private static int validateReplicationProxy(Configuration config, Field field, Field.ValidationOutput problems) {
+        if (!config.getBoolean(REPLICATION_CONNECTION_PROXY)) {
+            return 0;
+        }
+        if (LogicalDecoder.parse(config.getString(PLUGIN_NAME)) != LogicalDecoder.PGOUTPUT
+                || AutoCreateMode.parse(config.getString(PUBLICATION_AUTOCREATE_MODE)) != AutoCreateMode.DISABLED
+                || config.getBoolean(DROP_SLOT_ON_STOP)
+                || config.getBoolean(CREATE_FAIL_OVER_SLOT)
+                || config.getBoolean(SLOT_SEEK_TO_KNOWN_OFFSET)
+                || !Strings.isNullOrBlank(config.getString(REPLICA_IDENTITY_AUTOSET_VALUES))
+                || !Strings.isNullOrBlank(config.getString(STREAM_PARAMS))) {
+            problems.accept(field, true, "Replication proxy mode requires plugin.name=pgoutput, publication.autocreate.mode=disabled, "
+                    + "slot.drop.on.stop=false, slot.failover=false, slot.seek.to.known.offset.on.start=false, "
+                    + "and no replica.identity.autoset.values or slot.stream.params. Replication resources must be provisioned externally.");
+            return 1;
+        }
+        return 0;
     }
 
     // Source of the validation rules - https://doxygen.postgresql.org/slot_8c.html#afac399f07320b9adfd2c599cf822aaa3

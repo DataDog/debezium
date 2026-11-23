@@ -103,7 +103,9 @@ public class PostgresConnector extends RelationalBaseSourceConnector {
                         connection.connection(false);
                         testConnection(connection);
                         checkReadOnlyMode(connection, postgresConfig);
-                        checkLoginReplicationRoles(connection);
+                        if (!postgresConfig.isReplicationConnectionProxy()) {
+                            checkLoginReplicationRoles(connection);
+                        }
                     }
                     catch (SQLException e) {
                         LOGGER.error("Failed testing connection for {} with user '{}'", connection.connectionString(),
